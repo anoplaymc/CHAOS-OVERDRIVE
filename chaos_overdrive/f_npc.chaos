@@ -1,0 +1,160 @@
+-- NPC Control.
+
+local function has_npc() return alive(S.npc) end
+
+feature{ id = "npc_type", cat = "npc", section = "Create", kind = "select", label = "NPC Type", default = "npc_guard", transient = true,
+  options = function()
+    return item_options(function(it) return it.kind == "npc" end)
+  end }
+
+feature{ id = "npc_spawn", cat = "npc", section = "Create", kind = "button", label = "Create at Crosshair", style = "primary",
+  run = function()
+    local id = spawn_tracked(val("npc_type"), crosshair_point(1.1))
+    if id == nil then error("The game's NPC limit has been reached") end
+    S.npc = id
+    refresh_highlight()
+    ok("Created " .. entity_label(id))
+  end }
+
+feature{ id = "npc_clear", cat = "npc", section = "Create", kind = "button", label = "Remove NPCs This Mod Created", style = "danger",
+  run = function()
+    ask("Remove every NPC created by CHAOS OVERDRIVE?", function()
+      ok("Removed " .. remove_created("npc") .. " NPCs")
+    end)
+  end }
+
+feature{ id = "npc_select", cat = "npc", section = "Selected NPC", kind = "select", label = "NPC", transient = true,
+  get = function()
+    if S.npc then return tostring(S.npc) end
+    return ""
+  end,
+  options = function()
+    local out = {}
+    for _, id in ipairs(npc.all()) do table.insert(out, { value = tostring(id), label = entity_label(id) }) end
+    return out
+  end,
+  apply = function(v)
+    local id = tonumber(v)
+    if id then select_entity(id) end
+  end }
+
+feature{ id = "npc_select_aim", cat = "npc", section = "Selected NPC", kind = "button", label = "Select Under Crosshair",
+  run = function()
+    local id = aimed_entity()
+    if id == nil or not npc.is_npc(id) then error("There's no NPC under the crosshair") end
+    select_entity(id)
+  end }
+
+feature{ id = "npc_info", cat = "npc", section = "Selected NPC", kind = "info",
+  text = function()
+    if not has_npc() then return "No NPC selected." end
+    local i = sandbox.npc_info(S.npc)
+    local t = tostring(i.target)
+    return entity_label(S.npc) .. " · " .. i.state .. " · order: " .. i.order .. " · AI: " .. (i.ai and "on" or "off") .. "\nHealth " .. math.round(i.health) .. " / " .. i.max_health .. " · faction " .. i.faction .. " · stance " .. i.stance .. " · hostile to you: " .. tostring(i.hostile_to_player) .. "\nWalk " .. fmt(i.walk_speed) .. " · run " .. fmt(i.run_speed) .. " · sight " .. fmt(i.sight) .. " · hearing " .. fmt(i.hearing) .. "\nAttack " .. i.attack .. " · range " .. fmt(i.attack_range) .. " · damage " .. fmt(i.attack_damage) .. " · target " .. t
+  end }
+
+feature{ id = "npc_ai", cat = "npc", section = "Selected NPC", kind = "toggle", label = "AI Running", visible = has_npc,
+  get = function() return sandbox.npc_info(S.npc).ai end,
+  apply = function(on) sandbox.npc_set_ai(need_npc(), on) end }
+
+feature{ id = "npc_frozen", cat = "npc", section = "Selected NPC", kind = "toggle", label = "Frozen in Place", visible = has_npc,
+  get = function() return entity.is_anchored(S.npc) end,
+  apply = function(on)
+    local id = need_npc()
+    remember(id)
+    entity.set_anchored(id, on)
+  end }
+
+feature{ id = "npc_invulnerable", cat = "npc", section = "Selected NPC", kind = "toggle", label = "Invulnerable", visible = has_npc,
+  get = function() return sandbox.is_invulnerable(S.npc) end,
+  apply = function(on) sandbox.set_invulnerable(need_npc(), on) end }
+
+feature{ id = "npc_stance", cat = "npc", section = "Selected NPC", kind = "select", label = "Stance", hint = "An NPC with attack \"none\" can't fight whatever its stance.", visible = has_npc,
+  get = function() return sandbox.npc_info(S.npc).stance end,
+  options = { { value = "default", label = "Type's own" }, { value = "friendly", label = "Friendly" }, { value = "neutral", label = "Neutral" }, { value = "hostile", label = "Hostile" } },
+  apply = function(v)
+    if v == "default" then sandbox.npc_set_stance(need_npc(), nil) else sandbox.npc_set_stance(need_npc(), v) end
+  end }
+
+feature{ id = "npc_speed", cat = "npc", section = "Selected NPC", kind = "slider", label = "Speed", min = 0, max = 5, step = 0.05, unit = "×", visible = has_npc,
+  get = function() return sandbox.npc_info(S.npc).speed_scale end,
+  apply = function(v) sandbox.npc_set_tuning(need_npc(), { speed = v }) end }
+
+feature{ id = "npc_detection", cat = "npc", section = "Selected NPC", kind = "slider", label = "Detection Radius", hint = "Scales both sight and hearing.", min = 0, max = 10, step = 0.1, unit = "×", visible = has_npc,
+  get = function() return sandbox.npc_info(S.npc).sight_scale end,
+  apply = function(v) sandbox.npc_set_tuning(need_npc(), { sight = v, hearing = v }) end }
+
+feature{ id = "npc_heal", cat = "npc", section = "Orders", kind = "button", label = "Restore Health",
+  run = function()
+    local id = need_npc()
+    entity.set_health(id, entity.max_health(id))
+    ok("Healed " .. entity_label(id))
+  end }
+
+feature{ id = "npc_follow", cat = "npc", section = "Orders", kind = "button", label = "Follow Me",
+  run = function()
+    npc.follow(need_npc())
+    ok("It's following you")
+  end }
+
+feature{ id = "patrol_radius", cat = "npc", section = "Orders", kind = "slider", label = "Patrol Radius", min = 2, max = 30, step = 1, default = 6, unit = " m" }
+
+feature{ id = "npc_patrol", cat = "npc", section = "Orders", kind = "button", label = "Patrol Around Here",
+  run = function()
+    local id = need_npc()
+    local p = entity.position(id)
+    local r = val("patrol_radius")
+    npc.patrol(id, { { x = p.x + r, y = p.y, z = p.z }, { x = p.x, y = p.y, z = p.z + r }, { x = p.x - r, y = p.y, z = p.z }, { x = p.x, y = p.y, z = p.z - r } })
+    ok("It's patrolling")
+  end }
+
+feature{ id = "npc_stop", cat = "npc", section = "Orders", kind = "button", label = "Clear Orders",
+  run = function()
+    npc.stop(need_npc())
+    ok("Orders cleared")
+  end }
+
+feature{ id = "npc_remove", cat = "npc", section = "Orders", kind = "button", label = "Remove It", style = "danger",
+  run = function()
+    if not entity.remove(need_npc()) then error("Map fixtures can't be removed") end
+    S.npc = nil
+    ok("Removed")
+  end }
+
+-- ── Every NPC at once ──
+local MASS_ACTIONS = {
+  { value = "freeze", label = "Freeze all", run = function(id) remember(id) entity.set_anchored(id, true) end },
+  { value = "unfreeze", label = "Unfreeze all", run = function(id) remember(id) entity.set_anchored(id, false) end },
+  { value = "heal", label = "Heal all", run = function(id) entity.set_health(id, entity.max_health(id)) end },
+  { value = "ai_off", label = "Stop all AI", run = function(id) sandbox.npc_set_ai(id, false) end },
+  { value = "ai_on", label = "Resume all AI", run = function(id) sandbox.npc_set_ai(id, true) end },
+  { value = "follow", label = "All follow me", run = function(id) npc.follow(id) end },
+  { value = "stop", label = "Clear all orders", run = function(id) npc.stop(id) end },
+  { value = "friendly", label = "All friendly", run = function(id) sandbox.npc_set_stance(id, "friendly") end },
+  { value = "hostile", label = "All hostile", run = function(id) sandbox.npc_set_stance(id, "hostile") end },
+  { value = "remove", label = "Remove all", run = function(id) entity.remove(id) end },
+}
+
+feature{ id = "npc_mass_action", cat = "npc", section = "All NPCs", kind = "select", label = "Action", default = "freeze", transient = true,
+  options = function()
+    local out = {}
+    for _, a in ipairs(MASS_ACTIONS) do table.insert(out, { value = a.value, label = a.label }) end
+    return out
+  end }
+
+feature{ id = "npc_mass_run", cat = "npc", section = "All NPCs", kind = "button", label = "Apply to All NPCs", style = "danger",
+  run = function()
+    local chosen = nil
+    for _, a in ipairs(MASS_ACTIONS) do
+      if a.value == val("npc_mass_action") then chosen = a end
+    end
+    if chosen == nil then error("Choose an action") end
+    local ids = npc.all()
+    if #ids == 0 then error("There are no NPCs") end
+    ask(chosen.label .. ": " .. #ids .. " NPCs. Are you sure?", function()
+      for _, id in ipairs(ids) do
+        if entity.exists(id) then chosen.run(id) end
+      end
+      ok(chosen.label .. ": " .. #ids .. " NPCs")
+    end)
+  end }

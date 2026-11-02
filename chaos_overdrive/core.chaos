@@ -1,0 +1,337 @@
+-- The feature registry, the state, and the helpers every other file uses.
+-- A feature is one row in the menu. Its data is here and its behaviour is in the f_*.chaos files.
+
+global CATS = {
+  {id = "player", label = "Player"},
+  {id = "movement", label = "Movement"},
+  {id = "physics", label = "Physics"},
+  {id = "npc", label = "NPC Control"},
+  {id = "weapons", label = "Weapons & Items"},
+  {id = "vehicles", label = "Vehicles"},
+  {id = "world", label = "World Control"},
+  {id = "spawning", label = "Spawning"},
+  {id = "visuals", label = "Visuals"},
+  {id = "time", label = "Time & Weather"},
+  {id = "teleport", label = "Teleportation"},
+  {id = "chaos", label = "Fun & Chaos"},
+  {id = "tools", label = "Mod Tools"},
+  {id = "profiles", label = "Profiles & Settings"},
+}
+
+global FEATURES = {}
+global FEATURE_LIST = {}
+-- Buttons and boxes drawn by custom sections. "name|argument" ids go to the handler called name.
+global ACTIONS = {}
+
+-- Current values of features, saved in the active profile.
+global V = {}
+-- Everything that lasts only for this session. See reset_runtime.
+global S = {}
+
+function reset_runtime()
+  S = {
+    cat = S.cat or "player",
+    query = "",
+    sel = nil,
+    npc = nil,
+    veh = nil,
+    created = {},
+    touched = {},
+    ent = {},
+    confirm = nil,
+    job = nil,
+    carry = false,
+    experiments = {},
+    spawn_pick = S.spawn_pick,
+    spawn_query = "",
+    api_word = "",
+    profile_name = "",
+    set_name = "",
+    point_name = "",
+    import_text = "",
+    export_text = "",
+    diagnostics = "",
+    base_gravity = 9.81,
+    items = nil,
+    live_timer = nil,
+  }
+end
+reset_runtime()
+
+-- Adds a row. See the files that follow for the fields each kind takes.
+function feature(f)
+  if f.id == nil or f.cat == nil or f.kind == nil then error("feature needs id, cat and kind") end
+  if FEATURES[f.id] then error("duplicate feature " .. f.id) end
+  FEATURES[f.id] = f
+  table.insert(FEATURE_LIST, f)
+end
+
+function action(name, f)
+  ACTIONS[name] = f
+end
+
+function feature_value(f)
+  if f.get then return f.get() end
+  local v = V[f.id]
+  if v == nil then return f.default end
+  return v
+end
+
+function val(id)
+  return feature_value(FEATURES[id])
+end
+
+-- A kept value is one with a default and no live source. Those make up a profile.
+function is_kept(f)
+  return f.default ~= nil and f.get == nil and f.transient ~= true
+end
+
+function is_active(f)
+  if f.is_active then return f.is_active() end
+  if f.system or not is_kept(f) then return false end
+  return feature_value(f) ~= f.default
+end
+
+-- ── Messages ──
+function ok(text)
+  ui.toast(text, "success")
+end
+
+function fail(text)
+  ui.toast(text, "error")
+  log.warn(text)
+end
+
+function note(text)
+  ui.toast(text, "info")
+end
+
+-- ── Changing values ──
+global dirty = false
+
+-- Runs something from the menu. An error becomes a message instead of a stopped script.
+function guarded(label, f, a)
+  local r = pcall(f, a)
+  if not r.ok then
+    fail(label .. ": " .. tostring(r.error))
+    return false
+  end
+  return true
+end
+
+local function clean_value(f, v)
+  if f.kind == "toggle" then return v == true end
+  if f.kind == "slider" then
+    if type(v) ~= "number" then return f.default end
+    return math.clamp(v, f.min, f.max)
+  end
+  if f.kind == "select" then
+    if type(v) ~= "string" then return f.default end
+    return v
+  end
+  return v
+end
+
+function set_value(id, v, quiet)
+  local f = FEATURES[id]
+  local clean = clean_value(f, v)
+  if f.get == nil then V[id] = clean end
+  if f.transient ~= true and f.get == nil then dirty = true end
+  if f.apply then
+    if not guarded(f.label, f.apply, clean) then return false end
+  end
+  if not quiet and f.kind == "toggle" then note(f.label .. ": " .. (clean and "on" or "off")) end
+  return true
+end
+
+function reset_feature(id)
+  local f = FEATURES[id]
+  if f == nil then return end
+  if f.on_reset then
+    guarded(f.label, f.on_reset)
+  elseif f.default ~= nil then
+    V[id] = nil
+    dirty = true
+    if f.apply then guarded(f.label, f.apply, f.default) end
+  end
+  note(f.label .. " reset")
+end
+
+-- Puts back a list of features, or all of them, and says nothing per feature.
+function reset_features(cat)
+  for _, f in ipairs(FEATURE_LIST) do
+    if is_kept(f) and not f.system and (cat == nil or f.cat == cat) and is_active(f) then
+      V[f.id] = nil
+      if f.apply then guarded(f.label, f.apply, f.default) end
+    end
+  end
+  dirty = true
+end
+
+-- Applies what a profile holds, at the start of a session or after loading one.
+function apply_values()
+  for _, f in ipairs(FEATURE_LIST) do
+    if is_kept(f) and f.apply and is_active(f) then guarded(f.label, f.apply, feature_value(f)) end
+  end
+end
+
+-- ── Asking first ──
+function ask(text, f)
+  S.confirm = { text = text, run = f }
+end
+
+action("confirm_yes", function()
+  local c = S.confirm
+  S.confirm = nil
+  if c then guarded("Action", c.run) end
+end)
+
+action("confirm_no", function()
+  S.confirm = nil
+  note("Cancelled")
+end)
+
+-- ── Small helpers ──
+function nz(v)
+  if v == 1 then return -1 end
+  return v
+end
+
+function fmt(n)
+  return string.format("%.1f", n)
+end
+
+function fmt_pos(p)
+  return fmt(p.x) .. ", " .. fmt(p.y) .. ", " .. fmt(p.z)
+end
+
+function alive(id)
+  return id ~= nil and entity.exists(id)
+end
+
+function entity_label(id)
+  local def = entity.def(id)
+  local info = game.item_info(def)
+  local name = def
+  if info then name = info.name end
+  return name .. " #" .. id
+end
+
+function in_front(d)
+  local eye = player.eye()
+  local dir = player.look_dir()
+  return { x = eye.x + dir.x * d, y = eye.y + dir.y * d, z = eye.z + dir.z * d }
+end
+
+-- Where the crosshair lands, a little off the surface, or a few metres ahead if it hits nothing.
+function crosshair_point(lift)
+  local hit = physics.aim(120)
+  if hit == nil then return in_front(6) end
+  local n = lift or 0.7
+  return { x = hit.point.x + hit.normal.x * n, y = hit.point.y + hit.normal.y * n, z = hit.point.z + hit.normal.z * n }
+end
+
+function aimed_entity()
+  local hit = physics.aim(120)
+  if hit == nil then return nil end
+  return hit.entity
+end
+
+-- Creates something this mod answers for: it's removed when the mod stops, and listed under Mod Tools.
+function spawn_tracked(def, pos, options)
+  local id = entity.spawn(def, pos, options)
+  if id == nil then return nil end
+  sandbox.track_spawn(id)
+  S.created[id] = def
+  return id
+end
+
+function created_ids()
+  return table.keys(S.created)
+end
+
+function remove_created(kind)
+  local n = 0
+  for _, id in ipairs(created_ids()) do
+    if entity.exists(id) and (kind == nil or entity.kind(id) == kind) then
+      if entity.remove(id) then n = n + 1 end
+    end
+  end
+  return n
+end
+
+function remember(id)
+  sandbox.remember_entity(id)
+  S.touched[id] = true
+end
+
+function ent_state(id)
+  local t = S.ent[id]
+  if t == nil then
+    t = {}
+    S.ent[id] = t
+  end
+  return t
+end
+
+-- The catalog, read once a session: mods can't add content while it runs.
+function all_items()
+  if S.items == nil then S.items = game.items() end
+  return S.items
+end
+
+function item_options(test)
+  local out = {}
+  for _, it in ipairs(all_items()) do
+    if test(it) then table.insert(out, { value = it.id, label = it.name }) end
+  end
+  return out
+end
+
+function refresh_highlight()
+  local ids = {}
+  if alive(S.sel) then table.insert(ids, S.sel) end
+  if alive(S.npc) then table.insert(ids, S.npc) end
+  if alive(S.veh) then table.insert(ids, S.veh) end
+  sandbox.set_highlight(ids)
+end
+
+function select_entity(id)
+  if not alive(id) then
+    fail("That object no longer exists")
+    return false
+  end
+  if npc.is_npc(id) then S.npc = id end
+  if vehicle.is_vehicle(id) then S.veh = id end
+  S.sel = id
+  refresh_highlight()
+  ok("Selected " .. entity_label(id))
+  return true
+end
+
+function select_aimed()
+  local id = aimed_entity()
+  if id == nil then
+    fail("Nothing under the crosshair to select")
+    return
+  end
+  select_entity(id)
+end
+
+function need_sel()
+  if alive(S.sel) then return S.sel end
+  S.sel = nil
+  error("Select an object first")
+end
+
+function need_npc()
+  if alive(S.npc) then return S.npc end
+  S.npc = nil
+  error("Select an NPC first")
+end
+
+function need_veh()
+  if alive(S.veh) then return S.veh end
+  S.veh = nil
+  error("Select a vehicle first")
+end

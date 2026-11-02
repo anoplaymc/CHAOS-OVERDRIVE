@@ -1,0 +1,12 @@
+{
+  "chaos_overdrive": "1.0.0",
+  "profile": "Test Bench",
+  "values": {
+    "god": true,
+    "infinite_energy": true,
+    "speed": 1.5,
+    "jump": 2,
+    "hud_coords": true,
+    "hud_fps": true
+  }
+}

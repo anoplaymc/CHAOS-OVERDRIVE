@@ -1,0 +1,194 @@
+-- Physics: gravity, stopping the world, and the selected object.
+
+function apply_gravity()
+  if val("zero_g") then
+    sandbox.set_rule_gravity(0)
+  elseif val("gravity") ~= 1 then
+    sandbox.set_rule_gravity(S.base_gravity * val("gravity"))
+  else
+    sandbox.set_rule_gravity(nil)
+  end
+end
+
+feature{ id = "gravity", cat = "physics", section = "World", kind = "slider", label = "Gravity Multiplier", hint = "Negative pulls upward.", min = -2, max = 4, step = 0.05, default = 1, unit = "×",
+  apply = function(v) apply_gravity() end }
+
+feature{ id = "zero_g", cat = "physics", section = "World", kind = "toggle", label = "Gravity Off", default = false,
+  apply = function(on) apply_gravity() end }
+
+feature{ id = "world_frozen", cat = "physics", section = "World", kind = "toggle", label = "Pause Physics Objects", hint = "Holds every object and NPC still, keeping its motion. You can still move.", default = false,
+  apply = function(on) sandbox.set_world_frozen(on) end }
+
+local function selected_title()
+  if alive(S.sel) then return entity_label(S.sel) end
+  return nil
+end
+
+feature{ id = "select_aim", cat = "physics", section = "Selected object", kind = "button", label = "Select Under Crosshair", style = "primary",
+  run = function() select_aimed() end }
+
+feature{ id = "select_near", cat = "physics", section = "Selected object", kind = "select", label = "Or Pick Something Nearby", transient = true,
+  get = function()
+    if S.sel then return tostring(S.sel) end
+    return ""
+  end,
+  options = function()
+    local out = {}
+    for _, id in ipairs(entity.find_near(player.position(), 40)) do
+      table.insert(out, { value = tostring(id), label = entity_label(id) })
+      if #out >= 40 then break end
+    end
+    return out
+  end,
+  apply = function(v)
+    local id = tonumber(v)
+    if id then select_entity(id) end
+  end }
+
+feature{ id = "selected_info", cat = "physics", section = "Selected object", kind = "info",
+  text = function()
+    if not alive(S.sel) then return "Nothing selected. Aim at an object and press Select, or the Select key." end
+    local id = S.sel
+    local v = entity.velocity(id)
+    return selected_title() .. "\nPosition " .. fmt_pos(entity.position(id)) .. " · speed " .. fmt(vec.length(v)) .. " m/s\nMass " .. fmt(entity.mass(id)) .. " kg · health " .. math.round(entity.health(id)) .. " / " .. entity.max_health(id) .. " · material " .. entity.material(id) .. " · scale " .. entity.scale(id) .. "\nAnchored: " .. tostring(entity.is_anchored(id)) .. " · kind: " .. entity.kind(id)
+  end }
+
+local function has_sel() return alive(S.sel) end
+
+feature{ id = "sel_frozen", cat = "physics", section = "Selected object", kind = "toggle", label = "Frozen in Place", visible = has_sel,
+  get = function() return entity.is_anchored(S.sel) end,
+  apply = function(on)
+    local id = need_sel()
+    remember(id)
+    entity.set_anchored(id, on)
+    if on ~= entity.is_anchored(id) then error("This object can't be frozen") end
+  end }
+
+feature{ id = "sel_mass", cat = "physics", section = "Selected object", kind = "slider", label = "Mass", min = 1, max = 5000, step = 1, unit = " kg", visible = has_sel,
+  get = function() return math.round(entity.mass(S.sel)) end,
+  apply = function(v)
+    local id = need_sel()
+    S.touched[id] = true
+    sandbox.set_mass(id, v)
+  end }
+
+feature{ id = "sel_gravity", cat = "physics", section = "Selected object", kind = "slider", label = "Its Gravity", min = -5, max = 5, step = 0.1, unit = "×", visible = has_sel,
+  get = function()
+    local g = ent_state(S.sel).gravity
+    if g == nil then return 1 end
+    return g
+  end,
+  apply = function(v)
+    local id = need_sel()
+    remember(id)
+    entity.set_gravity_scale(id, v)
+    ent_state(id).gravity = v
+  end }
+
+feature{ id = "sel_damping", cat = "physics", section = "Selected object", kind = "slider", label = "Air Resistance", min = 0, max = 20, step = 0.1, visible = has_sel,
+  get = function() return ent_state(S.sel).damping or 0 end,
+  apply = function(v)
+    local id = need_sel()
+    remember(id)
+    entity.set_damping(id, v, v)
+    ent_state(id).damping = v
+  end }
+
+feature{ id = "sel_scale", cat = "physics", section = "Selected object", kind = "slider", label = "Size", min = 0.25, max = 3, step = 0.05, unit = "×", visible = has_sel,
+  get = function() return entity.scale(S.sel) end,
+  apply = function(v)
+    local id = need_sel()
+    remember(id)
+    entity.set_scale(id, v)
+  end }
+
+feature{ id = "sel_material", cat = "physics", section = "Selected object", kind = "select", label = "Material", hint = "Friction, bounce, weight and impact sound.", visible = has_sel,
+  get = function() return entity.material(S.sel) end,
+  options = function() return game.materials() end,
+  apply = function(v)
+    local id = need_sel()
+    remember(id)
+    entity.set_material(id, v)
+  end }
+
+feature{ id = "sel_restore", cat = "physics", section = "Selected object", kind = "button", label = "Restore Original Properties",
+  run = function()
+    local id = need_sel()
+    if not sandbox.restore_entity(id) then error("Nothing to restore: it hasn't been changed") end
+    S.touched[id] = nil
+    S.ent[id] = nil
+    ok("Restored " .. entity_label(id))
+  end }
+
+feature{ id = "sel_remove", cat = "physics", section = "Selected object", kind = "button", label = "Remove It", style = "danger",
+  run = function()
+    local id = need_sel()
+    if not entity.remove(id) then error("Map fixtures can't be removed") end
+    ok("Removed")
+  end }
+
+feature{ id = "push_force", cat = "physics", section = "Moving it", kind = "slider", label = "Push Strength", hint = "Change in speed for any mass.", min = 1, max = 60, step = 1, default = 12, unit = " m/s" }
+
+feature{ id = "push_dir", cat = "physics", section = "Moving it", kind = "select", label = "Push Direction", default = "away",
+  options = { { value = "away", label = "Away from me" }, { value = "toward", label = "Toward me" }, { value = "up", label = "Up" }, { value = "down", label = "Down" }, { value = "look", label = "Where I'm looking" } } }
+
+function push_vector(id)
+  local mode = val("push_dir")
+  if mode == "up" then return { x = 0, y = 1, z = 0 } end
+  if mode == "down" then return { x = 0, y = -1, z = 0 } end
+  if mode == "look" then return player.look_dir() end
+  local d = vec.normalize(vec.sub(entity.position(id), player.position()))
+  if mode == "toward" then return vec.scale(d, -1) end
+  return d
+end
+
+feature{ id = "sel_push", cat = "physics", section = "Moving it", kind = "button", label = "Push", style = "primary",
+  run = function()
+    local id = need_sel()
+    if entity.is_anchored(id) then error("It's frozen in place") end
+    entity.apply_impulse(id, vec.scale(push_vector(id), val("push_force") * entity.mass(id)))
+  end }
+
+feature{ id = "sel_stop", cat = "physics", section = "Moving it", kind = "button", label = "Stop Its Motion",
+  run = function() entity.set_velocity(need_sel(), { x = 0, y = 0, z = 0 }) end }
+
+feature{ id = "sel_lift", cat = "physics", section = "Moving it", kind = "button", label = "Lift 2 m",
+  run = function()
+    local id = need_sel()
+    local p = entity.position(id)
+    entity.set_position(id, { x = p.x, y = p.y + 2, z = p.z })
+  end }
+
+feature{ id = "sel_bring", cat = "physics", section = "Moving it", kind = "button", label = "Bring to Me",
+  run = function() entity.set_position(need_sel(), in_front(3)) end }
+
+feature{ id = "sel_carry", cat = "physics", section = "Moving it", kind = "toggle", label = "Carry It", hint = "Holds it three metres ahead of you until turned off.", transient = true,
+  get = function() return S.carry end,
+  is_active = function() return S.carry end,
+  on_reset = function() S.carry = false end,
+  apply = function(on)
+    if on then need_sel() end
+    S.carry = on
+  end }
+
+-- Moved every step so it follows smoothly. It does nothing at all unless carrying.
+events.on("tick", function(e)
+  if not S.carry then return end
+  if not alive(S.sel) then
+    S.carry = false
+    return
+  end
+  entity.set_position(S.sel, in_front(3))
+end)
+
+feature{ id = "clear_temp", cat = "physics", section = "Moving it", kind = "button", label = "Restore All Changed Objects",
+  run = function()
+    local n = 0
+    for _, id in ipairs(table.keys(S.touched)) do
+      if sandbox.restore_entity(id) then n = n + 1 end
+    end
+    S.touched = {}
+    S.ent = {}
+    S.carry = false
+    ok("Restored " .. n .. " objects")
+  end }

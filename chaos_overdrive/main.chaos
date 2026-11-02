@@ -1,0 +1,58 @@
+-- Startup. The mod does nothing to the game until a setting is changed in the menu.
+
+load_saved_profile()
+setup_keys()
+
+ui.add_button{
+  label = { en = "CHAOS OVERDRIVE", ru = "CHAOS OVERDRIVE" },
+  on_click = function() toggle_menu() end,
+}
+
+-- Effects end with the session, so each new session starts from what the profile holds.
+local function session_begins()
+  reset_runtime()
+  S.base_gravity = game.gravity()
+  apply_values()
+  update_hud()
+  refresh_highlight()
+  local ticks = 0
+  S.live_timer = timer.every(0.25, function()
+    -- The game can end flight by itself: on respawn, in a vehicle, or with the F key.
+    if (val("fly") or val("noclip")) and not player.is_flying() then
+      V.fly = nil
+      V.noclip = nil
+      dirty = true
+    end
+    update_hud()
+    ticks = ticks + 1
+    if ticks % 2 == 0 then render() end
+    if ticks % 4 == 0 then flush_profile() end
+  end)
+end
+
+events.on("session_start", function(e) session_begins() end)
+events.on("session_end", function(e) flush_profile() end)
+
+events.on("entity_removed", function(e)
+  S.created[e.id] = nil
+  S.touched[e.id] = nil
+  S.ent[e.id] = nil
+  local changed = false
+  if S.sel == e.id then
+    S.sel = nil
+    S.carry = false
+    changed = true
+  end
+  if S.npc == e.id then
+    S.npc = nil
+    changed = true
+  end
+  if S.veh == e.id then
+    S.veh = nil
+    changed = true
+  end
+  if changed then refresh_highlight() end
+end)
+
+-- Turned on or reloaded in the middle of a session.
+if game.in_session() then session_begins() end

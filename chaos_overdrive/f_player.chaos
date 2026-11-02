@@ -1,0 +1,198 @@
+-- Player, Movement and Teleportation.
+
+feature{ id = "god", cat = "player", section = "Protection", kind = "toggle", label = "God Mode", hint = "No damage, full health, and blasts don't throw you.", default = false,
+  apply = function(on) sandbox.set_god(on) end }
+
+feature{ id = "invulnerable", cat = "player", section = "Protection", kind = "toggle", label = "Invulnerable", hint = "Turns off the session's player damage rule. Knockback still happens.", default = false,
+  apply = function(on)
+    if on then sandbox.set_rule_damage(false) else sandbox.set_rule_damage(nil) end
+  end }
+
+feature{ id = "ignored", cat = "player", section = "Protection", kind = "toggle", label = "NPCs Ignore Me", hint = "Sets NPC aggression to passive unless you hurt them first.", default = false,
+  apply = function(on)
+    if on then sandbox.set_rule_aggression("passive") else apply_aggression() end
+  end }
+
+feature{ id = "heal", cat = "player", section = "Protection", kind = "button", label = "Full Health",
+  run = function()
+    player.set_health(player.max_health())
+    ok("Health restored")
+  end }
+
+feature{ id = "respawn", cat = "player", section = "Protection", kind = "button", label = "Respawn",
+  run = function()
+    player.respawn()
+    ok("Back at the spawn point")
+  end }
+
+feature{ id = "infinite_energy", cat = "player", section = "Resources", kind = "toggle", label = "Infinite Energy", hint = "Every weapon and tool stays fully charged.", default = false,
+  apply = function(on) sandbox.set_infinite_energy(on) end }
+
+feature{ id = "refill_player", cat = "player", section = "Resources", kind = "button", label = "Refill Energy Now",
+  run = function()
+    sandbox.refill_energy()
+    ok("Energy refilled")
+  end }
+
+feature{ id = "other_resources", cat = "player", section = "Resources", kind = "unavailable", label = "Survival Lives & Challenge Budgets",
+  reason = "These belong to their game modes, and no API can reach them. Energy is the only general resource." }
+
+feature{ id = "player_status", cat = "player", section = "Status", kind = "info",
+  text = function()
+    local p = player.position()
+    local state = "on foot"
+    if player.is_flying() then state = "flying" end
+    if player.is_driving() then state = "driving" end
+    if player.is_dead() then state = "dead" end
+    return "Position " .. fmt_pos(p) .. "\nHealth " .. math.round(player.health()) .. " / " .. player.max_health() .. " · " .. state .. " · tool: " .. player.tool()
+  end }
+
+feature{ id = "reset_player", cat = "player", section = "Status", kind = "button", label = "Reset Player & Movement",
+  run = function()
+    reset_features("player")
+    reset_features("movement")
+    ok("Player settings are back to normal")
+  end }
+
+-- ── Movement ──
+feature{ id = "speed", cat = "movement", section = "On foot", kind = "slider", label = "Movement Speed", min = 0.2, max = 10, step = 0.1, default = 1, unit = "×",
+  apply = function(v) sandbox.set_player_tuning{ speed = nz(v) } end }
+
+feature{ id = "jump", cat = "movement", section = "On foot", kind = "slider", label = "Jump Height", min = 0, max = 25, step = 0.25, default = 1, unit = "×",
+  apply = function(v) sandbox.set_player_tuning{ jump = nz(v) } end }
+
+feature{ id = "player_gravity", cat = "movement", section = "On foot", kind = "slider", label = "Player Gravity", hint = "What only you feel. 0 floats.", min = 0, max = 5, step = 0.05, default = 1, unit = "×",
+  apply = function(v) sandbox.set_player_tuning{ gravity = nz(v) } end }
+
+feature{ id = "air_control", cat = "movement", section = "On foot", kind = "slider", label = "Air Control", min = 0, max = 5, step = 0.05, default = 0.35,
+  apply = function(v)
+    if v == 0.35 then sandbox.set_air_control(nil) else sandbox.set_air_control(v) end
+  end }
+
+feature{ id = "launch", cat = "movement", section = "On foot", kind = "button", label = "Launch Upward",
+  run = function() player.launch({ x = 0, y = 18, z = 0 }) end }
+
+function apply_flight()
+  local changed = true
+  if val("noclip") then
+    changed = sandbox.set_flight(true, true)
+  elseif val("fly") then
+    changed = sandbox.set_flight(true, false)
+  elseif player.is_flying() then
+    changed = sandbox.set_flight(false)
+  end
+  if not changed then
+    V.fly = nil
+    V.noclip = nil
+    error("Not while driving or dead")
+  end
+end
+
+feature{ id = "fly", cat = "movement", section = "Flight", kind = "toggle", label = "Free Flight", hint = "Fly with solid collisions, in any game mode. Space up, Ctrl down. While flying, the game itself makes you untargetable.", default = false,
+  apply = function(on) apply_flight() end }
+
+feature{ id = "noclip", cat = "movement", section = "Flight", kind = "toggle", label = "No Clip", hint = "Fly through walls and objects.", default = false,
+  apply = function(on) apply_flight() end }
+
+feature{ id = "fly_speed", cat = "movement", section = "Flight", kind = "slider", label = "Flight Speed", min = 0.2, max = 10, step = 0.1, default = 1, unit = "×",
+  apply = function(v) sandbox.set_player_tuning{ fly_speed = nz(v) } end }
+
+feature{ id = "reset_movement", cat = "movement", section = "Flight", kind = "button", label = "Reset Movement",
+  run = function()
+    reset_features("movement")
+    ok("Movement is back to normal")
+  end }
+
+-- ── Teleportation ──
+function teleport_near(p)
+  player.teleport({ x = p.x, y = p.y + 1, z = p.z })
+  ok("Teleported to " .. fmt_pos(p))
+end
+
+feature{ id = "tp_crosshair", cat = "teleport", section = "Instant", kind = "button", label = "To the Crosshair", style = "primary",
+  run = function() teleport_near(crosshair_point(0.6)) end }
+
+feature{ id = "tp_up", cat = "teleport", section = "Instant", kind = "button", label = "10 m Up",
+  run = function()
+    local p = player.position()
+    player.teleport({ x = p.x, y = p.y + 10, z = p.z })
+  end }
+
+feature{ id = "tp_selected", cat = "teleport", section = "Instant", kind = "button", label = "To the Selected Object",
+  run = function()
+    local p = entity.position(need_sel())
+    teleport_near({ x = p.x + 1.5, y = p.y, z = p.z })
+  end }
+
+feature{ id = "tp_spawn", cat = "teleport", section = "Instant", kind = "button", label = "To the Map's Spawn",
+  run = function() player.respawn() end }
+
+feature{ id = "tp_x", cat = "teleport", section = "Coordinates", kind = "slider", label = "X", min = -200, max = 200, step = 0.5, default = 0, transient = true }
+feature{ id = "tp_y", cat = "teleport", section = "Coordinates", kind = "slider", label = "Y", min = -20, max = 120, step = 0.5, default = 2, transient = true }
+feature{ id = "tp_z", cat = "teleport", section = "Coordinates", kind = "slider", label = "Z", min = -200, max = 200, step = 0.5, default = 0, transient = true }
+
+feature{ id = "tp_here", cat = "teleport", section = "Coordinates", kind = "button", label = "Use My Position",
+  run = function()
+    local p = player.position()
+    V.tp_x = math.clamp(p.x, -200, 200)
+    V.tp_y = math.clamp(p.y, -20, 120)
+    V.tp_z = math.clamp(p.z, -200, 200)
+  end }
+
+feature{ id = "tp_go", cat = "teleport", section = "Coordinates", kind = "button", label = "Teleport There", style = "primary",
+  run = function() teleport_near({ x = val("tp_x"), y = val("tp_y") - 1, z = val("tp_z") }) end }
+
+-- Saved points are per map, since coordinates mean nothing on another one.
+local function points()
+  local all = storage.get("points", {})
+  return all[game.map()] or {}
+end
+
+local function save_points(list)
+  local all = storage.get("points", {})
+  all[game.map()] = list
+  storage.set("points", all)
+end
+
+action("point_name", function(v) S.point_name = v end)
+
+action("point_save", function()
+  local list = points()
+  if #list >= 40 then error("This map already has 40 saved points") end
+  local name = string.trim(S.point_name)
+  if name == "" then name = "Point " .. (#list + 1) end
+  local p = player.position()
+  table.insert(list, { name = string.sub(name, 1, 40), x = p.x, y = p.y, z = p.z })
+  save_points(list)
+  S.point_name = ""
+  ok("Saved " .. name)
+end)
+
+action("point_go", function(i)
+  local p = points()[tonumber(i)]
+  if p == nil then error("That point no longer exists") end
+  player.teleport({ x = p.x, y = p.y, z = p.z })
+  ok("Teleported to " .. p.name)
+end)
+
+action("point_delete", function(i)
+  local list = points()
+  local n = tonumber(i)
+  if list[n] == nil then error("That point no longer exists") end
+  local name = list[n].name
+  table.remove(list, n)
+  save_points(list)
+  ok("Deleted " .. name)
+end)
+
+feature{ id = "tp_points", cat = "teleport", section = "Saved points", kind = "custom", label = "Saved Points", keywords = "waypoint location",
+  render = function(out)
+    table.insert(out, { type = "input", id = "point_name", label = "New point name", value = S.point_name, placeholder = "Roof, Hangar…" })
+    table.insert(out, { type = "button", id = "point_save", label = "Save Current Position", style = "primary" })
+    local list = points()
+    if #list == 0 then table.insert(out, { type = "text", text = "No saved points on this map yet.", style = "muted" }) end
+    for i, p in ipairs(list) do
+      table.insert(out, { type = "button", id = "point_go|" .. i, label = "Go: " .. p.name, hint = fmt_pos(p) })
+      table.insert(out, { type = "button", id = "point_delete|" .. i, label = "Delete: " .. p.name })
+    end
+  end }

@@ -1,0 +1,269 @@
+-- Fun & Chaos. Every experiment is limited in reach and time, and Stop All ends it at once.
+
+local MAX_TARGETS = 64
+
+feature{ id = "stop_all_big", cat = "chaos", section = "Emergency", kind = "button", label = "STOP ALL EFFECTS", style = "danger", hint = "Same as the Stop key.",
+  run = function() stop_everything() end }
+
+feature{ id = "blast_scale", cat = "chaos", section = "Effect strength", kind = "slider", label = "Explosion Force", hint = "All explosions and shockwaves.", min = 0, max = 10, step = 0.1, default = 1, unit = "×",
+  apply = function(v)
+    if v == 1 then sandbox.set_blast_scale(nil) else sandbox.set_blast_scale(v) end
+  end }
+
+feature{ id = "chaos_time", cat = "chaos", section = "Effect strength", kind = "slider", label = "Time Scale", transient = true, min = 0.1, max = 3, step = 0.05, unit = "×",
+  get = function() return val("time_scale") end,
+  apply = function(v) set_value("time_scale", v, true) end }
+
+feature{ id = "chaos_radius", cat = "chaos", section = "Experiments", kind = "slider", label = "Area Radius", min = 2, max = 40, step = 1, default = 12, unit = " m" }
+feature{ id = "chaos_force", cat = "chaos", section = "Experiments", kind = "slider", label = "Force", min = 1, max = 40, step = 1, default = 12, unit = " m/s" }
+feature{ id = "chaos_seconds", cat = "chaos", section = "Experiments", kind = "slider", label = "Duration", min = 1, max = 20, step = 1, default = 5, unit = " s" }
+
+local function targets()
+  local ids = entity.find_near(player.position(), val("chaos_radius"), { kind = "prop" })
+  local out = {}
+  for _, id in ipairs(ids) do
+    if #out >= MAX_TARGETS then break end
+    table.insert(out, id)
+  end
+  return out
+end
+
+local function random_direction()
+  return vec.normalize({ x = math.random() * 2 - 1, y = math.random() + 0.2, z = math.random() * 2 - 1 })
+end
+
+feature{ id = "chaos_impulse", cat = "chaos", section = "Experiments", kind = "button", label = "Impulse on Everything Nearby", style = "primary",
+  run = function()
+    local ids = targets()
+    local force = val("chaos_force")
+    for _, id in ipairs(ids) do
+      local away = vec.normalize(vec.sub(entity.position(id), player.position()))
+      entity.apply_impulse(id, vec.scale(vec.normalize(vec.add(away, { x = 0, y = 0.4, z = 0 })), force * entity.mass(id)))
+    end
+    ok("Pushed " .. #ids .. " objects")
+  end }
+
+feature{ id = "chaos_selected_group", cat = "chaos", section = "Experiments", kind = "button", label = "Impulse on This Mod's Objects",
+  run = function()
+    local n = 0
+    for _, id in ipairs(created_ids()) do
+      if entity.exists(id) and entity.kind(id) == "prop" then
+        entity.apply_impulse(id, vec.scale(random_direction(), val("chaos_force") * entity.mass(id)))
+        n = n + 1
+      end
+    end
+    ok("Pushed " .. n .. " objects")
+  end }
+
+feature{ id = "chaos_explode", cat = "chaos", section = "Experiments", kind = "button", label = "Explosion at Crosshair",
+  run = function() game.explode(crosshair_point(0.3), 6, 900, 0) end }
+
+feature{ id = "chaos_shockwave", cat = "chaos", section = "Experiments", kind = "button", label = "Shockwave Around Me",
+  run = function()
+    game.shockwave(player.position(), math.min(20, val("chaos_radius")), 1200, 0)
+    fx.ring(player.position(), val("chaos_radius"), 0x19e0c4)
+  end }
+
+-- Runs something repeatedly for a while, and undoes what it changed afterwards.
+local function start_experiment(name, every, step, finish)
+  local run = { name = name, step_timer = nil, end_timer = nil, finish = finish }
+  step()
+  run.step_timer = timer.every(every, step)
+  run.end_timer = timer.after(val("chaos_seconds"), function()
+    end_experiment(run)
+    note(name .. " finished")
+  end)
+  table.insert(S.experiments, run)
+  ok(name .. " started")
+end
+
+function end_experiment(run)
+  timer.cancel(run.step_timer)
+  timer.cancel(run.end_timer)
+  if run.finish then pcall(run.finish) end
+  for i, r in ipairs(S.experiments) do
+    if r == run then
+      table.remove(S.experiments, i)
+      break
+    end
+  end
+end
+
+feature{ id = "chaos_storm", cat = "chaos", section = "Random experiments", kind = "button", label = "Impulse Storm", hint = "Random shoves in the area, for the duration.",
+  run = function()
+    start_experiment("Impulse Storm", 0.4, function()
+      for _, id in ipairs(targets()) do
+        entity.apply_impulse(id, vec.scale(random_direction(), val("chaos_force") * 0.5 * entity.mass(id)))
+      end
+    end, nil)
+  end }
+
+feature{ id = "chaos_roulette", cat = "chaos", section = "Random experiments", kind = "button", label = "Gravity Roulette", hint = "Random gravity per object, restored when it ends.",
+  run = function()
+    local ids = targets()
+    for _, id in ipairs(ids) do remember(id) end
+    local function restore()
+      for _, id in ipairs(ids) do
+        if entity.exists(id) then
+          sandbox.restore_entity(id)
+          S.touched[id] = nil
+        end
+      end
+    end
+    start_experiment("Gravity Roulette", 1, function()
+      for _, id in ipairs(ids) do
+        if entity.exists(id) then entity.set_gravity_scale(id, math.random() * 4 - 2) end
+      end
+    end, restore)
+  end }
+
+feature{ id = "chaos_materials", cat = "chaos", section = "Random experiments", kind = "button", label = "Material Shuffle", hint = "Random materials, restored when it ends.",
+  run = function()
+    local ids = targets()
+    local list = game.materials()
+    for _, id in ipairs(ids) do remember(id) end
+    local function restore()
+      for _, id in ipairs(ids) do
+        if entity.exists(id) then
+          sandbox.restore_entity(id)
+          S.touched[id] = nil
+        end
+      end
+    end
+    start_experiment("Material Shuffle", 1.5, function()
+      for _, id in ipairs(ids) do
+        if entity.exists(id) then entity.set_material(id, list[math.random(1, #list)]) end
+      end
+    end, restore)
+  end }
+
+feature{ id = "experiments_running", cat = "chaos", section = "Random experiments", kind = "info", label = "Experiment",
+  is_active = function() return #S.experiments > 0 end,
+  on_reset = function()
+    for _, run in ipairs(table.copy(S.experiments)) do end_experiment(run) end
+  end,
+  text = function()
+    if #S.experiments == 0 then return "No experiments running." end
+    local names = {}
+    for _, r in ipairs(S.experiments) do table.insert(names, r.name) end
+    return "Running: " .. table.concat(names, ", ")
+  end }
+
+-- ── NPCs this mod made ──
+local function created_npcs()
+  local out = {}
+  for _, id in ipairs(created_ids()) do
+    if entity.exists(id) and npc.is_npc(id) then table.insert(out, id) end
+  end
+  return out
+end
+
+feature{ id = "party_follow", cat = "chaos", section = "This mod's NPCs", kind = "button", label = "All Follow Me",
+  run = function()
+    local ids = created_npcs()
+    for _, id in ipairs(ids) do npc.follow(id) end
+    ok(#ids .. " NPCs following")
+  end }
+
+feature{ id = "party_scatter", cat = "chaos", section = "This mod's NPCs", kind = "button", label = "Scatter",
+  run = function()
+    local ids = created_npcs()
+    for _, id in ipairs(ids) do npc.scare(id, player.position(), 5) end
+    ok(#ids .. " NPCs running")
+  end }
+
+feature{ id = "party_brawl", cat = "chaos", section = "This mod's NPCs", kind = "button", label = "Brawl", hint = "Each armed NPC fights the next one.",
+  run = function()
+    local ids = created_npcs()
+    if #ids < 2 then error("This needs at least two NPCs created by this mod") end
+    local fighting = 0
+    for i, id in ipairs(ids) do
+      if npc.attack(id, ids[i % #ids + 1]) and sandbox.npc_info(id).attack ~= "none" then fighting = fighting + 1 end
+    end
+    ok(fighting .. " NPCs fighting")
+  end }
+
+feature{ id = "party_calm", cat = "chaos", section = "This mod's NPCs", kind = "button", label = "Calm Down",
+  run = function()
+    local ids = created_npcs()
+    for _, id in ipairs(ids) do
+      npc.attack(id, nil)
+      npc.stop(id)
+    end
+    ok(#ids .. " NPCs calm")
+  end }
+
+-- ── Saved groups of things ──
+local MAX_SET = 64
+
+local function sets()
+  return storage.get("sets", {})
+end
+
+action("set_name", function(v) S.set_name = v end)
+
+action("set_capture", function()
+  local name = string.trim(S.set_name)
+  if name == "" then error("Name the set first") end
+  local here = player.position()
+  local items = {}
+  for _, id in ipairs(entity.find_near(here, val("chaos_radius"))) do
+    if #items >= MAX_SET then break end
+    if sandbox.is_tracked(id) then
+      local p = entity.position(id)
+      table.insert(items, { def = entity.def(id), x = p.x - here.x, y = p.y - here.y, z = p.z - here.z, scale = entity.scale(id) })
+    end
+  end
+  if #items == 0 then error("None of this mod's objects are within the area radius") end
+  local all = sets()
+  all[string.sub(name, 1, 40)] = items
+  storage.set("sets", all)
+  S.set_name = ""
+  ok("Saved set " .. name .. " with " .. #items .. " things")
+end)
+
+action("set_apply", function(name)
+  local items = sets()[name]
+  if items == nil then error("That set no longer exists") end
+  local here = player.position()
+  local n = 0
+  for _, it in ipairs(items) do
+    -- A set may hold something from a mod that's since been turned off.
+    if game.item_info(it.def) then
+      local id = spawn_tracked(it.def, { x = here.x + it.x, y = here.y + it.y, z = here.z + it.z }, { scale = it.scale })
+      if id then n = n + 1 end
+    end
+  end
+  ok("Created " .. n .. " of " .. #items .. " from " .. name)
+end)
+
+action("set_delete", function(name)
+  local all = sets()
+  all[name] = nil
+  storage.set("sets", all)
+  ok("Deleted set " .. name)
+end)
+
+feature{ id = "sets", cat = "chaos", section = "Saved sets", kind = "custom", label = "Saved Entity Sets", keywords = "group preset capture",
+  render = function(out)
+    table.insert(out, { type = "text", text = "A set records this mod's objects within the area radius, relative to you.", style = "muted" })
+    table.insert(out, { type = "input", id = "set_name", label = "New set name", value = S.set_name, placeholder = "Crate wall…" })
+    table.insert(out, { type = "button", id = "set_capture", label = "Save Set From Nearby", style = "primary" })
+    for _, name in ipairs(table.keys(sets())) do
+      table.insert(out, { type = "button", id = "set_apply|" .. name, label = "Create: " .. name })
+      table.insert(out, { type = "button", id = "set_delete|" .. name, label = "Delete: " .. name })
+    end
+  end }
+
+-- Everything the mod has running stops, every setting goes back to normal, and what it created stays.
+function stop_everything()
+  stop_job(nil)
+  for _, run in ipairs(table.copy(S.experiments)) do end_experiment(run) end
+  S.carry = false
+  S.confirm = nil
+  reset_features(nil)
+  sandbox.revert_all(false)
+  S.touched = {}
+  S.ent = {}
+  ok("All effects stopped")
+end

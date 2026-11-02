@@ -1,0 +1,307 @@
+-- Mod Tools, and Profiles & Settings.
+
+feature{ id = "tools_mods", cat = "tools", section = "Mods", kind = "info", keywords = "active loaded list",
+  text = function()
+    local lines = {}
+    for _, m in ipairs(mod.list()) do table.insert(lines, m.name .. " " .. m.version .. ": " .. m.state) end
+    return table.concat(lines, "\n")
+  end }
+
+feature{ id = "tools_errors", cat = "tools", section = "Errors", kind = "info", keywords = "log problem",
+  text = function()
+    local lines = {}
+    for _, l in ipairs(mod.logs(12, "error")) do table.insert(lines, l.mod .. ": " .. l.text) end
+    if #lines == 0 then return "No mod errors logged." end
+    return table.concat(lines, "\n")
+  end }
+
+feature{ id = "tools_script", cat = "tools", section = "ChaosScript", kind = "info", keywords = "state heap timers status",
+  text = function()
+    local s = mod.status()
+    return "This mod's script: " .. s.phase .. " · errors " .. s.errors .. " · timers " .. s.timers .. " · handlers " .. s.handlers .. " · keys " .. s.keys .. "\nStored data " .. s.storage_bytes .. " bytes of 262144 · script data about " .. s.heap_cells .. " cells of 1000000"
+  end }
+
+feature{ id = "tools_created", cat = "tools", section = "What this mod created", kind = "info", keywords = "entities list",
+  text = function()
+    local ids = created_ids()
+    if #ids == 0 then return "Nothing." end
+    local lines = {}
+    for i, id in ipairs(ids) do
+      if i > 30 then
+        table.insert(lines, "…and " .. (#ids - 30) .. " more")
+        break
+      end
+      if entity.exists(id) then table.insert(lines, entity_label(id) .. " at " .. fmt_pos(entity.position(id))) end
+    end
+    return table.concat(lines, "\n")
+  end }
+
+feature{ id = "tools_overrides", cat = "tools", section = "What this mod created", kind = "info", keywords = "override active",
+  text = function()
+    local list = {}
+    for _, k in ipairs(sandbox.active()) do
+      if not string.ends_with(k, ":spawned") then table.insert(list, k) end
+    end
+    if #list == 0 then return "No game overrides in place." end
+    return "Game overrides in place: " .. table.concat(list, ", ")
+  end }
+
+feature{ id = "tools_disable", cat = "tools", section = "Cleaning up", kind = "button", label = "Turn Off All Effects",
+  run = function() stop_everything() end }
+
+feature{ id = "tools_cleanup", cat = "tools", section = "Cleaning up", kind = "button", label = "Turn Off Effects & Remove Everything Created", style = "danger",
+  run = function()
+    ask("Turn everything off and remove " .. #created_ids() .. " things this mod created?", function()
+      stop_everything()
+      sandbox.revert_all(true)
+      S.created = {}
+      ok("Cleaned up")
+    end)
+  end }
+
+action("api_word", function(v) S.api_word = v end)
+
+feature{ id = "tools_api", cat = "tools", section = "Mod API", kind = "custom", label = "Mod API Browser", keywords = "function search reference",
+  render = function(out)
+    table.insert(out, { type = "input", id = "api_word", label = "Search the API", value = S.api_word, placeholder = "spawn, patrol, sandbox…" })
+    local found = mod.api(S.api_word)
+    local lines = {}
+    for i, f in ipairs(found) do
+      if i > 30 then break end
+      local perm = ""
+      if f.permission then perm = "  [" .. f.permission .. "]" end
+      table.insert(lines, f.signature .. perm)
+    end
+    table.insert(out, { type = "text", text = #found .. " functions" .. (#found > 30 and ", showing 30" or ""), style = "muted" })
+    table.insert(out, { type = "text", text = table.concat(lines, "\n"), style = "mono" })
+  end }
+
+feature{ id = "tools_no_system", cat = "tools", section = "Mod API", kind = "unavailable", label = "System Commands & Arbitrary Files",
+  reason = "Deliberately left out. Mods run in the ChaosScript sandbox, and this menu stays inside it." }
+
+-- Facts about the game and the mods only. It has no save contents, names or settings of other mods in it.
+local function diagnostics()
+  local mods = {}
+  for _, m in ipairs(mod.list()) do table.insert(mods, { id = m.id, version = m.version, state = m.state }) end
+  local errors = {}
+  for _, l in ipairs(mod.logs(40, "error")) do table.insert(errors, { mod = l.mod, text = l.text }) end
+  local active = {}
+  for _, f in ipairs(active_features()) do table.insert(active, f.id) end
+  return json.encode({
+    mod = mod.id(), version = mod.version(), map = game.map(), mode = game.current_mode(),
+    perf = sandbox.perf(), script = mod.status(), mods = mods, errors = errors,
+    active_settings = active, overrides = sandbox.active(), created = #created_ids(),
+  })
+end
+
+feature{ id = "tools_diag", cat = "tools", section = "Diagnostics", kind = "button", label = "Build Diagnostic Report", style = "primary",
+  run = function()
+    S.diagnostics = diagnostics()
+    ok("Report ready: copy or save it below")
+  end }
+
+feature{ id = "tools_diag_out", cat = "tools", section = "Diagnostics", kind = "custom", label = "Diagnostic Report", keywords = "export",
+  render = function(out)
+    if S.diagnostics ~= "" then
+      table.insert(out, { type = "textarea", id = "diag_text", label = "Report. It holds no secrets or personal data.", value = S.diagnostics, rows = 8, readonly = true, filename = "chaos_overdrive_diagnostics.json" })
+    end
+  end }
+
+-- ── Profiles ──
+global profile_name = storage.get("profile", "Default")
+global KEY_DEFAULTS = { menu = "F6", select = "F7", stop = "F8" }
+global key_names = {}
+local key_bindings = {}
+
+local function all_profiles()
+  return storage.get("profiles", {})
+end
+
+-- Only values that mean something today are kept, whatever a file or an old version says.
+function values_from(raw)
+  local out = {}
+  if type(raw) ~= "table" then return out end
+  for _, f in ipairs(FEATURE_LIST) do
+    local v = raw[f.id]
+    if is_kept(f) and v ~= nil then
+      if f.kind == "toggle" and type(v) == "boolean" then out[f.id] = v end
+      if f.kind == "slider" and type(v) == "number" then out[f.id] = math.clamp(v, f.min, f.max) end
+      if f.kind == "select" and type(v) == "string" then out[f.id] = v end
+    end
+  end
+  return out
+end
+
+function current_values()
+  local out = {}
+  for _, f in ipairs(FEATURE_LIST) do
+    if is_kept(f) and V[f.id] ~= nil and V[f.id] ~= f.default then out[f.id] = V[f.id] end
+  end
+  return out
+end
+
+function flush_profile()
+  if not dirty then return end
+  dirty = false
+  local all = all_profiles()
+  all[profile_name] = current_values()
+  storage.set("profiles", all)
+  storage.set("profile", profile_name)
+end
+
+-- Changes everything to what a profile says: anything it doesn't mention goes back to normal first.
+function load_values(raw)
+  reset_features(nil)
+  V = values_from(raw)
+  if game.in_session() then apply_values() end
+end
+
+function load_saved_profile()
+  V = values_from(all_profiles()[profile_name])
+end
+
+feature{ id = "profile_pick", cat = "profiles", section = "Profiles", kind = "select", label = "Active Profile", transient = true,
+  get = function() return profile_name end,
+  options = function()
+    local names = table.keys(all_profiles())
+    if not table.contains(names, profile_name) then table.insert(names, profile_name) end
+    table.sort(names)
+    return names
+  end,
+  apply = function(name)
+    flush_profile()
+    profile_name = name
+    load_values(all_profiles()[name])
+    dirty = true
+    flush_profile()
+    ok("Profile: " .. name)
+  end }
+
+action("profile_new_name", function(v) S.profile_name = v end)
+
+action("profile_new", function()
+  local name = string.sub(string.trim(S.profile_name), 1, 40)
+  if name == "" then error("Name the profile first") end
+  flush_profile()
+  profile_name = name
+  S.profile_name = ""
+  dirty = true
+  flush_profile()
+  ok("Saved as profile " .. name)
+end)
+
+feature{ id = "profile_tools", cat = "profiles", section = "Profiles", kind = "custom", label = "New Profile",
+  render = function(out)
+    table.insert(out, { type = "input", id = "profile_new_name", label = "New profile from current settings", value = S.profile_name, placeholder = "Name" })
+    table.insert(out, { type = "button", id = "profile_new", label = "Save as New Profile", style = "primary" })
+  end }
+
+feature{ id = "profile_delete", cat = "profiles", section = "Profiles", kind = "button", label = "Delete This Profile", style = "danger",
+  run = function()
+    local name = profile_name
+    if name == "Default" then error("The Default profile can't be deleted") end
+    ask("Delete the profile " .. name .. "?", function()
+      local all = all_profiles()
+      all[name] = nil
+      storage.set("profiles", all)
+      profile_name = "Default"
+      load_values(all.Default)
+      dirty = true
+      flush_profile()
+      ok("Deleted " .. name)
+    end)
+  end }
+
+feature{ id = "profile_export", cat = "profiles", section = "Import & export", kind = "button", label = "Export Current Settings",
+  run = function()
+    S.export_text = json.encode({ chaos_overdrive = mod.version(), profile = profile_name, values = current_values() })
+    ok("Ready: copy or save it below")
+  end }
+
+action("import_text", function(v) S.import_text = v end)
+
+action("import_run", function()
+  local raw = json.decode(S.import_text)
+  if type(raw) ~= "table" or type(raw.values) ~= "table" then error("That isn't an exported CHAOS OVERDRIVE configuration") end
+  load_values(raw.values)
+  dirty = true
+  flush_profile()
+  S.import_text = ""
+  ok("Imported " .. table.count(V) .. " settings")
+end)
+
+feature{ id = "profile_io", cat = "profiles", section = "Import & export", kind = "custom", label = "Import Configuration", keywords = "export json",
+  render = function(out)
+    if S.export_text ~= "" then
+      table.insert(out, { type = "textarea", id = "export_text", label = "Exported configuration", value = S.export_text, rows = 5, readonly = true, filename = "chaos_overdrive_profile.json" })
+    end
+    table.insert(out, { type = "textarea", id = "import_text", label = "Paste a configuration to import", value = S.import_text, rows = 4 })
+    table.insert(out, { type = "button", id = "import_run", label = "Import", disabled = S.import_text == "" })
+  end }
+
+-- ── Keys ──
+local function press_menu() toggle_menu() end
+local function press_select()
+  if game.in_session() then select_aimed() end
+end
+local function press_stop()
+  if game.in_session() then stop_everything() end
+end
+local KEY_HANDLERS = { menu = press_menu, select = press_select, stop = press_stop }
+
+-- Binds a key, or leaves the old one in place and raises an error if the game keeps that key for itself.
+function bind_key(name, code)
+  local fresh = input.bind(code, KEY_HANDLERS[name])
+  if key_bindings[name] then input.unbind(key_bindings[name]) end
+  key_bindings[name] = fresh
+  key_names[name] = code
+end
+
+function setup_keys()
+  local saved = storage.get("keys", {})
+  for name, code in pairs(KEY_DEFAULTS) do
+    local chosen = saved[name] or code
+    if not pcall(bind_key, name, chosen).ok then bind_key(name, code) end
+  end
+end
+
+local function key_feature(id, name, label, hint)
+  feature{ id = id, cat = "profiles", section = "Keys", kind = "key", label = label, hint = hint,
+    get = function() return key_names[name] end,
+    apply = function(code)
+      for other, used in pairs(key_names) do
+        if other ~= name and used == code then error(code .. " is already used by this menu") end
+      end
+      bind_key(name, code)
+      local saved = storage.get("keys", {})
+      saved[name] = code
+      storage.set("keys", saved)
+      ok(label .. " is now " .. code)
+    end }
+end
+
+key_feature("key_menu", "menu", "Open or Close the Menu", "Default F6.")
+key_feature("key_select", "select", "Select Under Crosshair", "Default F7.")
+key_feature("key_stop", "stop", "Stop All Effects", "Default F8.")
+
+feature{ id = "ui_scale", cat = "profiles", section = "Interface", kind = "slider", label = "Menu Size", min = 0.7, max = 1.5, step = 0.05, default = 1, unit = "×", system = true }
+
+feature{ id = "settings_status", cat = "profiles", section = "Status", kind = "info", keywords = "version loaded",
+  text = function()
+    local total = 0
+    local out = 0
+    for _, f in ipairs(FEATURE_LIST) do
+      if f.kind == "unavailable" then out = out + 1 elseif f.kind ~= "info" then total = total + 1 end
+    end
+    return "CHAOS OVERDRIVE " .. mod.version() .. ": running. " .. total .. " working functions, " .. out .. " marked unavailable.\nSettings are stored by the game, separately from its files, and sent nowhere."
+  end }
+
+feature{ id = "reset_all", cat = "profiles", section = "Status", kind = "button", label = "Reset All Settings", style = "danger",
+  run = function()
+    ask("Put every setting in this profile back to normal?", function()
+      stop_everything()
+      V = {}
+      dirty = true
+      ok("All settings reset")
+    end)
+  end }

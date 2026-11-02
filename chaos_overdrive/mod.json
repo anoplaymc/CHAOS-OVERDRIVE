@@ -1,0 +1,11 @@
+{
+  "id": "chaos_overdrive",
+  "name": "CHAOS OVERDRIVE",
+  "description": "Private Sandbox Control & Cheat Suite. A large in-game menu (F6) for testing and experimenting in your own single-player sandbox. Off by default, and everything it changes is undone when it's disabled.",
+  "version": "1.0.0",
+  "author": "CHAOS LAB",
+  "api_version": "1.1",
+  "permissions": ["world", "player", "effects", "ui", "storage", "sandbox"],
+  "scripts": ["core.chaos", "f_player.chaos", "f_physics.chaos", "f_npc.chaos", "f_items.chaos", "f_world.chaos", "f_spawn.chaos", "f_chaos.chaos", "f_tools.chaos", "view.chaos", "main.chaos"],
+  "enabled_by_default": false
+}

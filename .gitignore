@@ -1,0 +1,15 @@
+# The release archive is attached to a GitHub Release, not committed.
+*.zip
+*.sha256
+*.chaosmod.json
+
+node_modules/
+dist/
+*.log
+*.local
+.env*
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

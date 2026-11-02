@@ -1,0 +1,191 @@
+-- Weapons, items and vehicles.
+
+action("equip", function(id)
+  if not player.select_tool(id) then error("That tool isn't available") end
+  if player.tool() ~= id then error("This game mode doesn't allow that tool. Try Unlock All Tools.") end
+  ok("Equipped " .. id)
+end)
+
+local function tool_buttons(kind)
+  return function(out)
+    for _, t in ipairs(sandbox.tools()) do
+      if t.kind == kind then
+        local label = t.name
+        if t.id == player.tool() then label = label .. " (in hand)" end
+        table.insert(out, { type = "button", id = "equip|" .. t.id, label = label, hint = "Slot " .. t.slot })
+      end
+    end
+  end
+end
+
+feature{ id = "weapon_list", cat = "weapons", section = "Weapons", kind = "custom", label = "Give Weapon", keywords = "equip weapon catalog", render = tool_buttons("weapon") }
+feature{ id = "tool_list", cat = "weapons", section = "Tools", kind = "custom", label = "Give Tool", keywords = "equip tool catalog", render = tool_buttons("tool") }
+
+feature{ id = "inventory_note", cat = "weapons", section = "Weapons", kind = "unavailable", label = "Inventory & Ammo Pickups",
+  reason = "The game has no inventory or ammunition. Every weapon is a hotbar slot with an energy bar, so giving one means equipping it, and refilling means refilling energy." }
+
+feature{ id = "infinite_energy_w", cat = "weapons", section = "Ammo", kind = "toggle", label = "Infinite Energy (Ammo)", transient = true,
+  get = function() return val("infinite_energy") end,
+  apply = function(on) set_value("infinite_energy", on, true) end }
+
+feature{ id = "refill", cat = "weapons", section = "Ammo", kind = "button", label = "Refill All Energy",
+  run = function()
+    sandbox.refill_energy()
+    ok("Energy refilled")
+  end }
+
+feature{ id = "unlock_tools", cat = "weapons", section = "Ammo", kind = "toggle", label = "Unlock All Tools", hint = "For modes that limit the hotbar.", default = false,
+  apply = function(on) sandbox.set_unlock_tools(on) end }
+
+feature{ id = "weapon_damage", cat = "weapons", section = "Tuning (all weapons)", kind = "slider", label = "Damage", hint = "Damage you deal, single player only.", min = 0, max = 50, step = 0.25, default = 1, unit = "×",
+  apply = function(v) sandbox.set_weapon_tuning{ damage = v } end }
+
+feature{ id = "weapon_impulse", cat = "weapons", section = "Tuning (all weapons)", kind = "slider", label = "Hit Force", min = 0, max = 20, step = 0.25, default = 1, unit = "×",
+  apply = function(v) sandbox.set_weapon_tuning{ impulse = v } end }
+
+feature{ id = "weapon_rate", cat = "weapons", section = "Tuning (all weapons)", kind = "slider", label = "Fire Rate", hint = "Faster cooldown and recharge.", min = 0.25, max = 10, step = 0.25, default = 1, unit = "×",
+  apply = function(v) sandbox.set_weapon_tuning{ fire_rate = v } end }
+
+-- ── Items ──
+feature{ id = "item_pick", cat = "weapons", section = "Items", kind = "select", label = "Item", default = "crate_wood", transient = true,
+  options = function()
+    return item_options(function(it) return it.kind == "prop" end)
+  end }
+
+feature{ id = "item_info", cat = "weapons", section = "Items", kind = "info",
+  text = function()
+    local i = game.item_info(val("item_pick"))
+    if i == nil then return "Choose an item." end
+    return i.name .. " (" .. i.id .. "): " .. i.description .. "\nCategory " .. i.category .. " · material " .. i.material .. " · breakable: " .. tostring(i.breakable)
+  end }
+
+feature{ id = "item_spawn", cat = "weapons", section = "Items", kind = "button", label = "Create in Front of Me", style = "primary",
+  run = function()
+    local id = spawn_tracked(val("item_pick"), in_front(2.5))
+    if id == nil then error("The game's object limit has been reached") end
+    ok("Created " .. entity_label(id))
+  end }
+
+feature{ id = "item_remove_aim", cat = "weapons", section = "Items", kind = "button", label = "Remove Under Crosshair",
+  run = function()
+    local id = aimed_entity()
+    if id == nil then error("Nothing under the crosshair") end
+    if not entity.remove(id) then error("Map fixtures can't be removed") end
+    ok("Removed")
+  end }
+
+feature{ id = "item_clear", cat = "weapons", section = "Items", kind = "button", label = "Remove Items This Mod Created", style = "danger",
+  run = function()
+    ask("Remove every object created by CHAOS OVERDRIVE?", function()
+      ok("Removed " .. remove_created("prop") .. " objects")
+    end)
+  end }
+
+-- ── Vehicles ──
+local function has_veh() return alive(S.veh) end
+
+feature{ id = "veh_type", cat = "vehicles", section = "Create", kind = "select", label = "Vehicle Type", default = "buggy", transient = true,
+  options = function()
+    return item_options(function(it) return it.kind == "vehicle" end)
+  end }
+
+feature{ id = "veh_spawn", cat = "vehicles", section = "Create", kind = "button", label = "Create at Crosshair", style = "primary",
+  run = function()
+    local id = spawn_tracked(val("veh_type"), crosshair_point(1.5))
+    if id == nil then error("The game's vehicle limit has been reached") end
+    S.veh = id
+    refresh_highlight()
+    ok("Created " .. entity_label(id))
+  end }
+
+feature{ id = "veh_clear", cat = "vehicles", section = "Create", kind = "button", label = "Remove Vehicles This Mod Created", style = "danger",
+  run = function()
+    ask("Remove every vehicle created by CHAOS OVERDRIVE?", function()
+      if player.is_driving() then vehicle.exit() end
+      ok("Removed " .. remove_created("vehicle") .. " vehicles")
+    end)
+  end }
+
+feature{ id = "veh_select", cat = "vehicles", section = "Selected vehicle", kind = "select", label = "Vehicle", transient = true,
+  get = function()
+    if S.veh then return tostring(S.veh) end
+    return ""
+  end,
+  options = function()
+    local out = {}
+    for _, id in ipairs(entity.list({ kind = "vehicle" })) do table.insert(out, { value = tostring(id), label = entity_label(id) }) end
+    return out
+  end,
+  apply = function(v)
+    local id = tonumber(v)
+    if id then select_entity(id) end
+  end }
+
+feature{ id = "veh_info", cat = "vehicles", section = "Selected vehicle", kind = "info",
+  text = function()
+    if not has_veh() then return "No vehicle selected." end
+    local i = sandbox.vehicle_info(S.veh)
+    return entity_label(S.veh) .. " · speed " .. fmt(vehicle.speed(S.veh)) .. " m/s · driven: " .. tostring(i.driven) .. "\nEngine " .. fmt(i.engine) .. " · top speed " .. fmt(i.top_speed) .. " · grip " .. fmt(i.grip) .. " · " .. i.wheels .. " wheels"
+  end }
+
+feature{ id = "veh_teleport", cat = "vehicles", section = "Selected vehicle", kind = "button", label = "Teleport to It",
+  run = function()
+    local p = entity.position(need_veh())
+    if player.is_driving() then vehicle.exit() end
+    teleport_near({ x = p.x + 2.5, y = p.y, z = p.z })
+  end }
+
+feature{ id = "veh_enter", cat = "vehicles", section = "Selected vehicle", kind = "button", label = "Get In",
+  run = function()
+    if player.is_driving() then vehicle.exit() end
+    if not vehicle.enter(need_veh()) then error("Can't get in right now") end
+    ok("Driving")
+  end }
+
+feature{ id = "veh_repair", cat = "vehicles", section = "Selected vehicle", kind = "button", label = "Repair & Right It",
+  run = function()
+    local id = need_veh()
+    entity.set_health(id, entity.max_health(id))
+    sandbox.vehicle_upright(id)
+    ok("Repaired")
+  end }
+
+feature{ id = "veh_remove", cat = "vehicles", section = "Selected vehicle", kind = "button", label = "Remove It", style = "danger",
+  run = function()
+    if not entity.remove(need_veh()) then error("Map fixtures can't be removed") end
+    S.veh = nil
+    ok("Removed")
+  end }
+
+feature{ id = "veh_engine", cat = "vehicles", section = "Selected vehicle", kind = "slider", label = "Acceleration", min = 0.1, max = 10, step = 0.1, unit = "×", visible = has_veh,
+  get = function() return sandbox.vehicle_info(S.veh).engine_scale end,
+  apply = function(v) sandbox.vehicle_set_tuning(need_veh(), { engine = v }) end }
+
+feature{ id = "veh_top", cat = "vehicles", section = "Selected vehicle", kind = "slider", label = "Top Speed", min = 0.1, max = 10, step = 0.1, unit = "×", visible = has_veh,
+  get = function() return sandbox.vehicle_info(S.veh).top_speed_scale end,
+  apply = function(v) sandbox.vehicle_set_tuning(need_veh(), { top_speed = v }) end }
+
+feature{ id = "veh_grip", cat = "vehicles", section = "Selected vehicle", kind = "slider", label = "Grip", min = 0.1, max = 10, step = 0.1, unit = "×", visible = has_veh,
+  get = function() return sandbox.vehicle_info(S.veh).grip_scale end,
+  apply = function(v) sandbox.vehicle_set_tuning(need_veh(), { grip = v }) end }
+
+feature{ id = "veh_gravity", cat = "vehicles", section = "Selected vehicle", kind = "slider", label = "Its Gravity", min = -5, max = 5, step = 0.1, unit = "×", visible = has_veh,
+  get = function()
+    local g = ent_state(S.veh).gravity
+    if g == nil then return 1 end
+    return g
+  end,
+  apply = function(v)
+    local id = need_veh()
+    remember(id)
+    entity.set_gravity_scale(id, v)
+    ent_state(id).gravity = v
+  end }
+
+feature{ id = "veh_mass", cat = "vehicles", section = "Selected vehicle", kind = "slider", label = "Mass", min = 50, max = 20000, step = 50, unit = " kg", visible = has_veh,
+  get = function() return math.round(entity.mass(S.veh)) end,
+  apply = function(v)
+    local id = need_veh()
+    S.touched[id] = true
+    sandbox.set_mass(id, v)
+  end }

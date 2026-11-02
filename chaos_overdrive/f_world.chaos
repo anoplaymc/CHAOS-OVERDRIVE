@@ -1,0 +1,208 @@
+-- World Control, Time & Weather, and Visuals.
+
+function apply_aggression()
+  if val("ignored") then
+    sandbox.set_rule_aggression("passive")
+  elseif val("aggression") ~= "map" then
+    sandbox.set_rule_aggression(val("aggression"))
+  else
+    sandbox.set_rule_aggression(nil)
+  end
+end
+
+feature{ id = "world_pick", cat = "world", section = "Objects", kind = "select", label = "Object", default = "crate_wood", transient = true,
+  options = function()
+    return item_options(function(it) return it.kind == "prop" end)
+  end }
+
+feature{ id = "world_spawn", cat = "world", section = "Objects", kind = "button", label = "Create at Crosshair", style = "primary",
+  run = function()
+    local id = spawn_tracked(val("world_pick"), crosshair_point(1))
+    if id == nil then error("The game's object limit has been reached") end
+    ok("Created " .. entity_label(id))
+  end }
+
+feature{ id = "world_select", cat = "world", section = "Objects", kind = "button", label = "Select Under Crosshair",
+  run = function() select_aimed() end }
+
+feature{ id = "world_remove_selected", cat = "world", section = "Objects", kind = "button", label = "Remove the Selected Object",
+  run = function()
+    if not entity.remove(need_sel()) then error("Map fixtures can't be removed") end
+    ok("Removed")
+  end }
+
+feature{ id = "world_remove_created", cat = "world", section = "Objects", kind = "button", label = "Remove Everything This Mod Created", style = "danger",
+  run = function()
+    ask("Remove " .. #created_ids() .. " things created by CHAOS OVERDRIVE?", function()
+      if player.is_driving() then vehicle.exit() end
+      ok("Removed " .. remove_created(nil) .. " things")
+    end)
+  end }
+
+feature{ id = "freeze_radius", cat = "world", section = "Freezing", kind = "slider", label = "Freeze Radius", min = 2, max = 60, step = 1, default = 15, unit = " m" }
+
+feature{ id = "world_freeze_near", cat = "world", section = "Freezing", kind = "button", label = "Freeze Objects Around Me",
+  run = function()
+    local ids = entity.find_near(player.position(), val("freeze_radius"), { kind = "prop" })
+    ask("Freeze up to " .. #ids .. " objects in place?", function()
+      local n = 0
+      for _, id in ipairs(ids) do
+        if entity.exists(id) then
+          remember(id)
+          entity.set_anchored(id, true)
+          if entity.is_anchored(id) then n = n + 1 end
+        end
+      end
+      ok("Froze " .. n .. " objects. Restore All Changed Objects, under Physics, undoes it.")
+    end)
+  end }
+
+feature{ id = "world_pause_link", cat = "world", section = "Freezing", kind = "toggle", label = "Pause All Physics Objects", transient = true,
+  get = function() return val("world_frozen") end,
+  apply = function(on) set_value("world_frozen", on, true) end }
+
+-- ── Light ──
+global WEATHER = {
+  clear = { fog = 1 },
+  overcast = { preset = "cloud", fog = 1 },
+  fog = { preset = "cloud", fog = 6 },
+  heavy_fog = { preset = "cloud", fog = 20 },
+}
+
+function apply_light()
+  local w = WEATHER[val("weather")] or WEATHER.clear
+  local preset = val("sky")
+  if preset == "map" and w.preset then preset = w.preset end
+  local hour = -1
+  if val("use_hour") then hour = val("hour") end
+  if preset == "map" and hour < 0 and val("sun") == 1 and val("ambient") == 1 and val("fog") == 1 and w.fog == 1 then
+    sandbox.set_environment(nil)
+    return
+  end
+  sandbox.set_environment{ preset = preset, hour = hour, sun = val("sun"), ambient = val("ambient"), fog = math.min(30, val("fog") * w.fog) }
+end
+
+feature{ id = "sun", cat = "world", section = "Lighting", kind = "slider", label = "Sunlight", min = 0, max = 5, step = 0.05, default = 1, unit = "×",
+  apply = function(v) apply_light() end }
+
+feature{ id = "ambient", cat = "world", section = "Lighting", kind = "slider", label = "Ambient Light", min = 0, max = 5, step = 0.05, default = 1, unit = "×",
+  apply = function(v) apply_light() end }
+
+feature{ id = "fog", cat = "world", section = "Lighting", kind = "slider", label = "Fog", min = 0, max = 30, step = 0.25, default = 1, unit = "×",
+  apply = function(v) apply_light() end }
+
+feature{ id = "aggression", cat = "world", section = "Rules", kind = "select", label = "NPC Aggression", default = "map",
+  options = { { value = "map", label = "The session's own" }, { value = "passive", label = "Passive" }, { value = "normal", label = "Normal" }, { value = "high", label = "High" } },
+  apply = function(v) apply_aggression() end }
+
+local WORLD_KEYS = { "gravity", "zero_g", "sun", "ambient", "fog", "sky", "weather", "use_hour", "hour", "time_scale", "aggression", "blast_scale" }
+
+feature{ id = "world_save", cat = "world", section = "Saved world settings", kind = "button", label = "Save World Settings",
+  run = function()
+    local saved = {}
+    for _, k in ipairs(WORLD_KEYS) do saved[k] = val(k) end
+    storage.set("world_saved", saved)
+    ok("World settings saved")
+  end }
+
+feature{ id = "world_load", cat = "world", section = "Saved world settings", kind = "button", label = "Restore World Settings",
+  run = function()
+    local saved = storage.get("world_saved")
+    if saved == nil then error("Nothing has been saved yet") end
+    for _, k in ipairs(WORLD_KEYS) do
+      if saved[k] ~= nil then set_value(k, saved[k], true) end
+    end
+    ok("World settings restored")
+  end }
+
+feature{ id = "world_defaults", cat = "world", section = "Saved world settings", kind = "button", label = "Back to the Map's Own",
+  run = function()
+    for _, k in ipairs(WORLD_KEYS) do
+      if is_active(FEATURES[k]) then reset_feature(k) end
+    end
+  end }
+
+-- ── Time and weather ──
+feature{ id = "time_scale", cat = "time", section = "Simulation speed", kind = "slider", label = "Time Scale", hint = "Slows or speeds everything, you included.", min = 0.1, max = 3, step = 0.05, default = 1, unit = "×",
+  apply = function(v)
+    if v == 1 then sandbox.set_time_scale(nil) else sandbox.set_time_scale(v) end
+  end }
+
+feature{ id = "time_pause_link", cat = "time", section = "Simulation speed", kind = "toggle", label = "Pause Physics Objects", transient = true,
+  get = function() return val("world_frozen") end,
+  apply = function(on) set_value("world_frozen", on, true) end }
+
+feature{ id = "use_hour", cat = "time", section = "Time of day", kind = "toggle", label = "Control Time of Day", hint = "Maps have fixed light. This moves the sun and blends the sky.", default = false,
+  apply = function(on) apply_light() end }
+
+feature{ id = "hour", cat = "time", section = "Time of day", kind = "slider", label = "Hour", hint = "Used while Control Time of Day is on. Underground and indoor areas change less.", min = 0, max = 24, step = 0.25, default = 12, unit = " h",
+  is_active = function() return false end,
+  apply = function(v) apply_light() end }
+
+feature{ id = "sky", cat = "time", section = "Sky & weather", kind = "select", label = "Sky", default = "map",
+  options = { { value = "map", label = "The map's own" }, { value = "day", label = "Day" }, { value = "dusk", label = "Dusk" }, { value = "night", label = "Night" }, { value = "cloud", label = "Cloudy" } },
+  apply = function(v) apply_light() end }
+
+feature{ id = "weather", cat = "time", section = "Sky & weather", kind = "select", label = "Weather", hint = "The game's weather is its sky and fog.", default = "clear",
+  options = { { value = "clear", label = "As set" }, { value = "overcast", label = "Overcast" }, { value = "fog", label = "Fog" }, { value = "heavy_fog", label = "Heavy Fog" } },
+  apply = function(v) apply_light() end }
+
+feature{ id = "precipitation", cat = "time", section = "Sky & weather", kind = "unavailable", label = "Rain, Snow & Wind",
+  reason = "The engine has no precipitation or wind system. Only the sky, the light and the fog can change." }
+
+-- ── Visuals ──
+local function overlay(id, name, label, hint)
+  feature{ id = id, cat = "visuals", section = "In the world", kind = "toggle", label = label, hint = hint, default = false,
+    apply = function(on) sandbox.set_overlay(name, on) end }
+end
+
+overlay("ov_colliders", "colliders", "Physics Colliders", "Every collision shape, as lines. Expensive on big maps.")
+overlay("ov_radius", "npc_radius", "NPC Detection Radii", "Blue is sight, amber is hearing, red is attack range.")
+overlay("ov_direction", "npc_direction", "NPC Movement Direction", "A line along each NPC's velocity.")
+overlay("ov_labels", "npc_labels", "NPC State & Paths", "The same view as F4: state labels and routes.")
+overlay("ov_highlight", "highlight", "Highlight Selection", "A yellow box around selected things.")
+
+feature{ id = "hud_coords", cat = "visuals", section = "On the HUD", kind = "toggle", label = "Coordinates", default = false, apply = function(on) update_hud() end }
+feature{ id = "hud_fps", cat = "visuals", section = "On the HUD", kind = "toggle", label = "FPS & Frame Time", default = false, apply = function(on) update_hud() end }
+feature{ id = "hud_physics", cat = "visuals", section = "On the HUD", kind = "toggle", label = "Physics Debug Info", hint = "World totals and the selected object.", default = false, apply = function(on) update_hud() end }
+feature{ id = "hud_npc", cat = "visuals", section = "On the HUD", kind = "toggle", label = "NPC Info", hint = "The selected NPC's state and numbers.", default = false, apply = function(on) update_hud() end }
+feature{ id = "hud_effects", cat = "visuals", section = "On the HUD", kind = "toggle", label = "Active Effects", hint = "How many menu settings are changed.", default = false, apply = function(on) update_hud() end }
+
+function update_hud()
+  local lines = {}
+  if val("hud_coords") then
+    table.insert(lines, "XYZ " .. fmt_pos(player.position()))
+  end
+  if val("hud_fps") then
+    local perf = sandbox.perf()
+    table.insert(lines, "FPS " .. perf.fps .. " · frame " .. perf.frame_ms .. " ms · physics " .. perf.physics_ms .. " ms")
+  end
+  if val("hud_effects") then
+    table.insert(lines, "Active effects: " .. #active_features())
+  end
+  if #lines > 0 then
+    ui.show_panel{ id = "overdrive_hud", title = "OVERDRIVE", lines = lines }
+  else
+    ui.hide_panel("overdrive_hud")
+  end
+
+  if val("hud_physics") then
+    local perf = sandbox.perf()
+    local out = { "Bodies " .. perf.bodies .. " · entities " .. perf.entities, "Particles " .. perf.particles .. " · debris " .. perf.debris, "Gravity " .. fmt(game.gravity()) }
+    if alive(S.sel) then
+      table.insert(out, entity_label(S.sel))
+      table.insert(out, "Mass " .. fmt(entity.mass(S.sel)) .. " kg · " .. fmt(vec.length(entity.velocity(S.sel))) .. " m/s")
+      table.insert(out, "At " .. fmt_pos(entity.position(S.sel)))
+    end
+    ui.show_panel{ id = "overdrive_physics", title = "Physics", lines = out }
+  else
+    ui.hide_panel("overdrive_physics")
+  end
+
+  if val("hud_npc") and alive(S.npc) then
+    local i = sandbox.npc_info(S.npc)
+    ui.show_panel{ id = "overdrive_npc", title = entity_label(S.npc), lines = { i.state .. " · order " .. i.order, "Health " .. math.round(i.health) .. " / " .. i.max_health, "Sight " .. fmt(i.sight) .. " · hearing " .. fmt(i.hearing), "Faction " .. i.faction .. " · stance " .. i.stance } }
+  else
+    ui.hide_panel("overdrive_npc")
+  end
+end

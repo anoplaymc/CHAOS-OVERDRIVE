@@ -1,0 +1,170 @@
+-- The spawning screen, with its limits: a count capped at 100, a confirmation above 10, an interval of at
+-- least 0.05 s, one job at a time, and a stop if the frame rate falls too far.
+
+local MAX_COUNT = 100
+local ASK_ABOVE = 10
+local MIN_FPS = 8
+
+local KINDS = {
+  { value = "props", label = "Props" },
+  { value = "npcs", label = "NPCs" },
+  { value = "items", label = "Items" },
+  { value = "weapons", label = "Weapons" },
+  { value = "vehicles", label = "Vehicles" },
+}
+
+local function in_group(it, group)
+  if it.kind == "effect" then return false end
+  if group == "props" then return it.category == "props" or it.category == "decorations" or it.category == "construction" end
+  if group == "npcs" then return it.kind == "npc" end
+  if group == "vehicles" then return it.kind == "vehicle" end
+  if group == "items" then return it.category == "physics" or it.category == "mechanical" or (it.category == "effects" and it.kind == "prop") end
+  if group == "weapons" then return it.category == "weapons" end
+  return false
+end
+
+feature{ id = "spawn_group", cat = "spawning", section = "Choose", kind = "select", label = "Category", default = "props", options = KINDS, system = true,
+  apply = function(v) S.spawn_pick = nil end }
+
+action("spawn_query", function(v) S.spawn_query = v end)
+action("spawn_pick", function(id) S.spawn_pick = id end)
+
+feature{ id = "spawn_browser", cat = "spawning", section = "Choose", kind = "custom", label = "Entity List", keywords = "search spawn entity catalog",
+  render = function(out)
+    table.insert(out, { type = "input", id = "spawn_query", label = "Search this category", value = S.spawn_query, placeholder = "crate, robot…" })
+    local q = string.lower(S.spawn_query)
+    local n = 0
+    for _, it in ipairs(all_items()) do
+      if in_group(it, val("spawn_group")) and (q == "" or string.find(string.lower(it.name), q) or string.find(string.lower(it.id), q)) then
+        n = n + 1
+        if n <= 48 then
+          local label = it.name
+          if S.spawn_pick == it.id then label = "▶ " .. label end
+          local style = "normal"
+          if S.spawn_pick == it.id then style = "primary" end
+          table.insert(out, { type = "button", id = "spawn_pick|" .. it.id, label = label, style = style })
+        end
+      end
+    end
+    if n == 0 then table.insert(out, { type = "text", text = "Nothing matches.", style = "muted" }) end
+    if n > 48 then table.insert(out, { type = "text", text = (n - 48) .. " more: narrow the search.", style = "muted" }) end
+  end }
+
+feature{ id = "spawn_preview", cat = "spawning", section = "Selected entity", kind = "info",
+  text = function()
+    local i = nil
+    if S.spawn_pick then i = game.item_info(S.spawn_pick) end
+    if i == nil then return "Choose something from the list." end
+    local extra = "Kind " .. i.kind .. " · category " .. i.category .. " · material " .. i.material .. " · shape " .. i.shape
+    if i.health then extra = extra .. " · health " .. i.health end
+    if i.source then extra = extra .. " · from mod " .. i.source end
+    if i.tool then extra = extra .. "\nThis is a weapon: creating it equips it instead." end
+    return i.name .. " (" .. i.id .. ")\n" .. i.description .. "\n" .. extra
+  end }
+
+feature{ id = "spawn_where", cat = "spawning", section = "Where and how many", kind = "select", label = "Position", default = "crosshair",
+  options = { { value = "crosshair", label = "At the crosshair" }, { value = "front", label = "In front of me" }, { value = "above", label = "Above me" }, { value = "custom", label = "At coordinates" } } }
+
+feature{ id = "spawn_x", cat = "spawning", section = "Where and how many", kind = "slider", label = "X", min = -200, max = 200, step = 0.5, default = 0, transient = true, visible = function() return val("spawn_where") == "custom" end }
+feature{ id = "spawn_y", cat = "spawning", section = "Where and how many", kind = "slider", label = "Y", min = -20, max = 120, step = 0.5, default = 2, transient = true, visible = function() return val("spawn_where") == "custom" end }
+feature{ id = "spawn_z", cat = "spawning", section = "Where and how many", kind = "slider", label = "Z", min = -200, max = 200, step = 0.5, default = 0, transient = true, visible = function() return val("spawn_where") == "custom" end }
+
+feature{ id = "spawn_count", cat = "spawning", section = "Where and how many", kind = "slider", label = "Count", hint = "Limit 100. Above 10 it asks first.", min = 1, max = MAX_COUNT, step = 1, default = 1, system = true }
+feature{ id = "spawn_interval", cat = "spawning", section = "Where and how many", kind = "slider", label = "Interval", hint = "Time between each one.", min = 0.05, max = 5, step = 0.05, default = 0.1, unit = " s", system = true }
+feature{ id = "spawn_scale", cat = "spawning", section = "Where and how many", kind = "slider", label = "Size", min = 0.25, max = 3, step = 0.05, default = 1, unit = "×", system = true }
+feature{ id = "spawn_anchored", cat = "spawning", section = "Where and how many", kind = "toggle", label = "Fixed in Place", default = false, system = true }
+
+local function spawn_position(index)
+  local mode = val("spawn_where")
+  local base = nil
+  if mode == "front" then
+    base = in_front(4)
+  elseif mode == "above" then
+    local p = player.position()
+    base = { x = p.x, y = p.y + 6, z = p.z }
+  elseif mode == "custom" then
+    base = { x = val("spawn_x"), y = val("spawn_y"), z = val("spawn_z") }
+  else
+    base = crosshair_point(1)
+  end
+  -- A spiral, so that a batch doesn't appear inside itself.
+  local radius = 0.9 * math.sqrt(index)
+  local angle = index * 2.4
+  return { x = base.x + math.cos(angle) * radius, y = base.y + (index % 4) * 0.35, z = base.z + math.sin(angle) * radius }
+end
+
+function stop_job(text)
+  local job = S.job
+  if job == nil then return end
+  if job.timer then timer.cancel(job.timer) end
+  S.job = nil
+  if text then note(text) end
+end
+
+local function spawn_step()
+  local job = S.job
+  if job == nil then return end
+  if sandbox.perf().fps < MIN_FPS then
+    stop_job("Spawning stopped: the frame rate fell too low")
+    return
+  end
+  local options = { scale = job.scale, anchored = job.anchored }
+  local id = spawn_tracked(job.def, spawn_position(job.done), options)
+  if id == nil then
+    job.misses = job.misses + 1
+    if job.misses > 10 then stop_job("Spawning stopped at " .. job.done .. ": the game's limit was reached") end
+    return
+  end
+  job.done = job.done + 1
+  if job.done >= job.count then stop_job("Created " .. job.done) end
+end
+
+local function start_job(def)
+  stop_job(nil)
+  local job = { def = def, count = math.floor(val("spawn_count")), done = 0, misses = 0, scale = val("spawn_scale"), anchored = val("spawn_anchored"), timer = nil }
+  S.job = job
+  spawn_step()
+  if S.job ~= nil then
+    job.timer = timer.every(val("spawn_interval"), spawn_step)
+  end
+end
+
+feature{ id = "spawn_go", cat = "spawning", section = "Do it", kind = "button", label = "Spawn", style = "primary",
+  run = function()
+    if S.spawn_pick == nil then error("Choose something from the list first") end
+    local i = game.item_info(S.spawn_pick)
+    if i == nil then error("That item no longer exists") end
+    if i.tool then
+      if not player.select_tool(i.tool) then error("That weapon isn't available") end
+      ok("Equipped " .. i.name)
+      return
+    end
+    local n = math.floor(val("spawn_count"))
+    if n > ASK_ABOVE then
+      ask("Create " .. n .. " × " .. i.name .. "? This can be heavy on the frame rate.", function() start_job(S.spawn_pick) end)
+    else
+      start_job(S.spawn_pick)
+    end
+  end }
+
+feature{ id = "spawn_cancel", cat = "spawning", section = "Do it", kind = "button", label = "Cancel Spawning",
+  disabled = function() return S.job == nil end,
+  run = function() stop_job("Spawning cancelled") end }
+
+feature{ id = "spawn_clear", cat = "spawning", section = "Do it", kind = "button", label = "Remove Everything This Mod Created", style = "danger",
+  run = function()
+    stop_job(nil)
+    ask("Remove " .. #created_ids() .. " things created by CHAOS OVERDRIVE?", function()
+      if player.is_driving() then vehicle.exit() end
+      ok("Removed " .. remove_created(nil) .. " things")
+    end)
+  end }
+
+feature{ id = "spawn_status", cat = "spawning", section = "Do it", kind = "info", label = "Spawning",
+  is_active = function() return S.job ~= nil end,
+  on_reset = function() stop_job(nil) end,
+  text = function()
+    local s = "Created by this mod so far: " .. #created_ids()
+    if S.job then s = "Spawning " .. S.job.done .. " of " .. S.job.count .. "…\n" .. s end
+    return s
+  end }

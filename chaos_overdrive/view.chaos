@@ -1,0 +1,176 @@
+-- Turns the registry into what the panel shows, and what happens in the panel back into calls.
+
+function active_features()
+  local out = {}
+  for _, f in ipairs(FEATURE_LIST) do
+    if is_active(f) then table.insert(out, f) end
+  end
+  return out
+end
+
+local function is_visible(f)
+  if f.visible and not f.visible() then return false end
+  return true
+end
+
+local function feature_controls(f, out)
+  local kind = f.kind
+  if kind == "custom" then
+    f.render(out)
+  elseif kind == "info" then
+    table.insert(out, { type = "text", text = f.text(), style = "mono" })
+  elseif kind == "unavailable" then
+    table.insert(out, { type = "unavailable", label = f.label, reason = f.reason })
+  elseif kind == "button" then
+    local disabled = false
+    if f.disabled then disabled = f.disabled() end
+    table.insert(out, { type = "button", id = f.id, label = f.label, hint = f.hint, style = f.style or "normal", disabled = disabled })
+  elseif kind == "toggle" then
+    table.insert(out, { type = "toggle", id = f.id, label = f.label, hint = f.hint, value = feature_value(f), reset = is_kept(f) })
+  elseif kind == "slider" then
+    table.insert(out, { type = "slider", id = f.id, label = f.label, hint = f.hint, value = feature_value(f), min = f.min, max = f.max, step = f.step, unit = f.unit, reset = is_kept(f) })
+  elseif kind == "select" then
+    local options = f.options
+    if type(options) == "function" then options = options() end
+    local value = feature_value(f)
+    if value == nil then value = "" end
+    table.insert(out, { type = "select", id = f.id, label = f.label, hint = f.hint, value = value, options = options, reset = is_kept(f) })
+  elseif kind == "key" then
+    table.insert(out, { type = "key", id = f.id, label = f.label, hint = f.hint, value = feature_value(f) })
+  end
+end
+
+local function matches(f, q)
+  local text = string.lower((f.label or "") .. " " .. (f.hint or "") .. " " .. (f.keywords or "") .. " " .. f.section)
+  if string.find(text, q) then return true end
+  -- So that "noclip" finds No Clip.
+  return string.find(string.replace(text, " ", ""), string.replace(q, " ", "")) ~= nil
+end
+
+local function cat_label(id)
+  for _, c in ipairs(CATS) do
+    if c.id == id then return c.label end
+  end
+  return id
+end
+
+-- Rows of one category grouped by section, or for a search, every match in the menu.
+local function build_sections()
+  local q = string.lower(string.trim(S.query))
+  local order = {}
+  local by_title = {}
+  for _, f in ipairs(FEATURE_LIST) do
+    local wanted = false
+    if q ~= "" then
+      wanted = f.kind ~= "info" and is_visible(f) and matches(f, q)
+    else
+      wanted = f.cat == S.cat and is_visible(f)
+    end
+    if wanted then
+      local title = f.section or ""
+      if q ~= "" then title = cat_label(f.cat) .. " · " .. title end
+      local section = by_title[title]
+      if section == nil then
+        section = { title = title, controls = {} }
+        by_title[title] = section
+        table.insert(order, section)
+      end
+      feature_controls(f, section.controls)
+    end
+  end
+  if q ~= "" and #order == 0 then
+    table.insert(order, { title = "Search", controls = { { type = "text", text = "Nothing matches “" .. S.query .. "”.", style = "muted" } } })
+  end
+  return order
+end
+
+local function build_view()
+  local active = active_features()
+  local chips = {}
+  for _, f in ipairs(active) do
+    table.insert(chips, { id = f.id, label = f.label or f.id })
+  end
+  local badges = {}
+  for _, f in ipairs(active) do
+    badges[f.cat] = (badges[f.cat] or 0) + 1
+  end
+  local nav = {}
+  for _, c in ipairs(CATS) do
+    local badge = ""
+    if badges[c.id] then badge = tostring(badges[c.id]) end
+    table.insert(nav, { id = c.id, label = c.label, badge = badge })
+  end
+  local confirm = nil
+  if S.confirm then confirm = { text = S.confirm.text, yes = "confirm_yes", no = "confirm_no" } end
+  return {
+    title = "CHAOS OVERDRIVE",
+    subtitle = "v" .. mod.version() .. " · Running · Profile: " .. profile_name .. " · Menu key: " .. key_names.menu .. " · " .. #active .. " active",
+    scale = val("ui_scale"),
+    nav = nav,
+    active = S.cat,
+    search = { id = "search", value = S.query, placeholder = "Search every function…" },
+    chips = chips,
+    sections = build_sections(),
+    confirm = confirm,
+    footer = {
+      { type = "button", id = "footer_stop", label = "STOP ALL EFFECTS", style = "danger" },
+      { type = "button", id = "footer_reset", label = "Reset This Page" },
+      { type = "button", id = "footer_close", label = "Close" },
+    },
+  }
+end
+
+function render()
+  if ui.panel_open() then ui.update_panel(build_view()) end
+end
+
+action("search", function(v) S.query = v end)
+action("footer_stop", function() stop_everything() end)
+action("footer_reset", function()
+  reset_features(S.cat)
+  ok(cat_label(S.cat) .. " is back to normal")
+end)
+action("footer_close", function() ui.close_panel() end)
+
+local function run_control(id, value)
+  local named = ACTIONS[id]
+  if named then
+    guarded("Menu", named, value)
+    return
+  end
+  local cut = string.find(id, "|")
+  if cut then
+    local handler = ACTIONS[string.sub(id, 1, cut - 1)]
+    if handler then guarded("Menu", handler, string.sub(id, cut + 1)) end
+    return
+  end
+  local f = FEATURES[id]
+  if f == nil then return end
+  if f.kind == "button" then
+    guarded(f.label, f.run)
+  else
+    set_value(id, value)
+  end
+end
+
+function on_panel_event(e)
+  if e.type == "nav" then
+    S.cat = e.id
+    S.query = ""
+  elseif e.type == "control" then
+    run_control(e.id, e.value)
+  elseif e.type == "reset" or e.type == "chip" then
+    reset_feature(e.id)
+  end
+  render()
+end
+
+function toggle_menu()
+  if not game.in_session() then return end
+  if ui.panel_open() then
+    ui.close_panel()
+  else
+    ui.open_panel(build_view(), on_panel_event)
+    sound.play("uiClick", 0.6)
+  end
+end
